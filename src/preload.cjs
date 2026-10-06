@@ -22,6 +22,15 @@ contextBridge.exposeInMainWorld('chew', {
   pathForFile: (file) => webUtils.getPathForFile(file),
   confirm: (message, detail, okLabel) => ipcRenderer.invoke('confirm', message, detail, okLabel),
   contextMenu: (items) => ipcRenderer.invoke('context-menu', items),
+  session: {
+    get: () => ipcRenderer.invoke('session:get'),
+    set: (patch) => ipcRenderer.send('session:set', patch),
+  },
+  updates: {
+    check: () => ipcRenderer.invoke('update:check'),
+    install: () => ipcRenderer.invoke('update:install'),
+    status: () => ipcRenderer.invoke('update:status'),
+  },
   playlists: {
     create: (name, ids) => ipcRenderer.invoke('playlist:create', name, ids),
     update: (id, patch) => ipcRenderer.invoke('playlist:update', id, patch),
@@ -34,4 +43,5 @@ contextBridge.exposeInMainWorld('chew', {
   onFetchProgress: on('fetch-progress'),
   onCommand: on('command'),
   onPlayTracks: on('play-tracks'),
+  onUpdateStatus: on('update-status'),
 });

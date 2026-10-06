@@ -44,6 +44,8 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
           if-no-files-found: error
 
   release:

@@ -1,14 +1,15 @@
 import { EventEmitter } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, watch as fsWatch } from 'node:fs';
 import path from 'node:path';
 import { parseFile, selectCover } from 'music-metadata';
 import { isAudioFile, extOf, IMAGE_EXTENSIONS, playbackMode } from './formats.js';
 import { probeDuration } from './ffmpeg.js';
 import * as online from './online.js';
 
-const DB_VERSION = 1;
+// v2: tracks carry ReplayGain values, so files scanned by v1 are read again once.
+const DB_VERSION = 2;
 const TAG_FIELDS = ['title', 'artist', 'albumArtist', 'album', 'year', 'genre', 'trackNo', 'discNo'];
 const COVER_NAMES = ['cover', 'folder', 'front', 'album', 'albumart', 'albumartsmall', 'thumb'];
 
@@ -60,6 +61,27 @@ export function guessFromPath(file, root) {
   return guess;
 }
 
+// ReplayGain from tags; Opus files use R128 gain (Q7.8 relative to -23 LUFS, ReplayGain uses -18 LUFS).
+function replayGainOf(meta) {
+  const c = meta.common;
+  const rg = {
+    trackGain: c.replaygain_track_gain?.dB ?? null,
+    albumGain: c.replaygain_album_gain?.dB ?? null,
+    trackPeak: c.replaygain_track_peak?.ratio ?? null,
+    albumPeak: c.replaygain_album_peak?.ratio ?? null,
+  };
+  if (rg.trackGain == null) {
+    for (const tags of Object.values(meta.native || {})) {
+      for (const { id, value } of tags) {
+        const key = String(id).toUpperCase();
+        if (key === 'R128_TRACK_GAIN') rg.trackGain = Number(value) / 256 + 5;
+        if (key === 'R128_ALBUM_GAIN') rg.albumGain = Number(value) / 256 + 5;
+      }
+    }
+  }
+  return rg;
+}
+
 async function pool(items, size, fn) {
   let i = 0;
   const workers = Array.from({ length: Math.min(size, items.length) }, async () => {
@@ -91,14 +113,22 @@ export class Library extends EventEmitter {
   load() {
     const empty = {
       version: DB_VERSION,
-      settings: { folders: [], autoFetch: true, volume: 0.8, shuffle: false, repeat: 'off' },
+      settings: {
+        folders: [], autoFetch: true, volume: 0.8, shuffle: false, repeat: 'off',
+        watchFolders: true, gapless: true, replayGain: 'auto', outputDevice: 'default', autoUpdate: true,
+      },
       tracks: {},
       albums: {},
       playlists: [],
     };
     try {
       const data = JSON.parse(readFileSync(this.dbFile, 'utf8'));
-      return { ...empty, ...data, settings: { ...empty.settings, ...data.settings } };
+      const merged = { ...empty, ...data, settings: { ...empty.settings, ...data.settings } };
+      if ((data.version || 1) < DB_VERSION) {
+        for (const t of Object.values(merged.tracks)) t.mtime = 0; // force a re-read on the next scan
+        merged.version = DB_VERSION;
+      }
+      return merged;
     } catch {
       return empty;
     }
@@ -169,6 +199,7 @@ export class Library extends EventEmitter {
     if (folders.some((f) => normPath(f) === normPath(dir))) return false;
     folders.push(dir);
     this.changed();
+    this.watch();
     return true;
   }
 
@@ -178,6 +209,34 @@ export class Library extends EventEmitter {
       if (!t.loose && !this.data.settings.folders.some((f) => isUnder(t.path, f))) delete this.data.tracks[id];
     }
     this.changed();
+    this.watch();
+  }
+
+  // Watch the music folders and rescan a few seconds after anything changes,
+  // so new albums show up (and deleted ones disappear) without a manual rescan.
+  watch() {
+    this.unwatch();
+    if (this.data.settings.watchFolders === false) return;
+    for (const root of this.data.settings.folders) {
+      try {
+        const w = fsWatch(root, { recursive: true }, (_event, file) => {
+          const name = file ? path.basename(String(file)) : '';
+          if (name.startsWith('.')) return;
+          // Folder renames have no extension; otherwise only audio and cover images matter.
+          if (name && path.extname(name) && !isAudioFile(name) && !IMAGE_EXTENSIONS.has(extOf(name))) return;
+          clearTimeout(this.watchTimer);
+          this.watchTimer = setTimeout(() => this.scan(), 3000);
+        });
+        w.on('error', () => {});
+        this.watchers.push(w);
+      } catch { /* folder missing or not watchable (e.g. some network drives) */ }
+    }
+  }
+
+  unwatch() {
+    clearTimeout(this.watchTimer);
+    for (const w of this.watchers || []) { try { w.close(); } catch { /* ignore */ } }
+    this.watchers = [];
   }
 
   async walk(dir, out) {
@@ -240,6 +299,7 @@ export class Library extends EventEmitter {
         bitsPerSample: meta.format.bitsPerSample || null,
         channels: meta.format.numberOfChannels || null,
         lossless: !!meta.format.lossless,
+        ...replayGainOf(meta),
       });
       const pic = selectCover(c.picture);
       if (pic?.data?.length) t.cover = await this.storeCover(Buffer.from(pic.data), pic.format);
@@ -257,7 +317,8 @@ export class Library extends EventEmitter {
   }
 
   async scan() {
-    if (this.scanning) return;
+    if (this.scanning) { this.rescanPending = true; return; }
+    this.rescanPending = false;
     this.scanning = true;
     this.folderCoverCache.clear();
     this.emit('scan', { phase: 'walk', done: 0, total: 0 });
@@ -299,6 +360,7 @@ export class Library extends EventEmitter {
       this.changed();
       this.emit('scan', { phase: 'done' });
     }
+    if (this.rescanPending) { this.scan(); return; }
     if (this.data.settings.autoFetch) this.fetchMissing().catch((e) => this.emit('fetch', { phase: 'error', message: e.message }));
   }
 

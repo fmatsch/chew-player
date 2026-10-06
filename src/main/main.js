@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu, nativeTheme } from 'electron';
-import { createReadStream } from 'node:fs';
+import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu, nativeTheme, session } from 'electron';
+import { createReadStream, readFileSync, writeFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -7,22 +7,40 @@ import { fileURLToPath } from 'node:url';
 import { Library } from './library.js';
 import { extOf, isAudioFile } from './formats.js';
 import { transcodeStream, ffmpegPath } from './ffmpeg.js';
+import { Updater } from './updater.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === 'darwin';
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'chew', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+  { scheme: 'chew', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
 
 // Development helpers: isolated profile and scripted screenshots (see README → Development).
 if (process.env.CHEW_USER_DATA) app.setPath('userData', path.resolve(process.env.CHEW_USER_DATA));
 
+// Audio runs through a Web Audio graph (gapless, ReplayGain, output device), so never wait for a user gesture.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let win = null;
 let library = null;
+let updater = null;
 const pendingOpen = [];
+
+// The last playback session (queue + position) lives in its own small file so the
+// big library JSON isn't rewritten every few seconds while music plays.
+let sessionState = null;
+let sessionTimer = null;
+const sessionFile = () => path.join(app.getPath('userData'), 'session.json');
+function loadSession() {
+  try { sessionState = JSON.parse(readFileSync(sessionFile(), 'utf8')); } catch { sessionState = null; }
+}
+function saveSessionNow() {
+  clearTimeout(sessionTimer);
+  if (sessionState) { try { writeFileSync(sessionFile(), JSON.stringify(sessionState)); } catch { /* ignore */ } }
+}
 
 const MIME = {
   mp3: 'audio/mpeg', mp2: 'audio/mpeg', flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
@@ -30,10 +48,13 @@ const MIME = {
   aac: 'audio/aac', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp',
 };
 
+// The renderer routes audio through Web Audio, which needs CORS-clean media.
+const CORS = { 'Access-Control-Allow-Origin': '*' };
+
 // Byte-range aware file response so <audio> can seek.
 async function serveFile(file, request) {
   const { size } = await fs.stat(file);
-  const headers = { 'Content-Type': MIME[extOf(file)] || 'application/octet-stream', 'Accept-Ranges': 'bytes' };
+  const headers = { 'Content-Type': MIME[extOf(file)] || 'application/octet-stream', 'Accept-Ranges': 'bytes', ...CORS };
   let start = 0;
   let end = size - 1;
   let status = 200;
@@ -60,7 +81,7 @@ function registerProtocol() {
         if (!track) return new Response('Not found', { status: 404 });
         if (url.host === 'media') return await serveFile(track.path, request);
         const t = Number(url.searchParams.get('t')) || 0;
-        return new Response(transcodeStream(track.path, t, track.sampleRate || 0), { headers: { 'Content-Type': 'audio/flac' } });
+        return new Response(transcodeStream(track.path, t, track.sampleRate || 0), { headers: { 'Content-Type': 'audio/flac', ...CORS } });
       }
       if (url.host === 'cover') {
         const p = url.searchParams.get('p');
@@ -199,8 +220,19 @@ function registerIpc() {
   ipcMain.handle('settings:set', (_e, key, value) => {
     library.data.settings[key] = value;
     if (key === 'theme') nativeTheme.themeSource = value;
+    if (key === 'watchFolders') library.watch();
+    if (key === 'autoUpdate') updater.schedule();
     library.save();
   });
+  ipcMain.handle('session:get', () => sessionState);
+  ipcMain.on('session:set', (_e, patch) => {
+    sessionState = { ...(sessionState || {}), ...patch };
+    clearTimeout(sessionTimer);
+    sessionTimer = setTimeout(saveSessionNow, 2000);
+  });
+  ipcMain.handle('update:check', () => updater.check(true));
+  ipcMain.handle('update:install', () => updater.install());
+  ipcMain.handle('update:status', () => updater.status);
   ipcMain.handle('tracks:edit', (_e, ids, edits) => library.editTracks(ids, edits));
   ipcMain.handle('tracks:reveal', (_e, id) => { const t = library.data.tracks[id]; if (t) shell.showItemInFolder(t.path); });
   ipcMain.handle('folder:reveal', (_e, dir) => shell.openPath(dir));
@@ -254,6 +286,7 @@ async function captureAndQuit(out) {
     await fs.writeFile(shots.length > 1 ? out.replace(/\.png$/, `-${i}.png`) : out, img.toPNG());
   }
   await library.saveNow();
+  saveSessionNow();
   app.exit(0);
 }
 
@@ -273,6 +306,13 @@ app.whenReady().then(() => {
   library.on('changed', () => send('library-changed'));
   library.on('scan', (p) => send('scan-progress', p));
   library.on('fetch', (p) => send('fetch-progress', p));
+  loadSession();
+  updater = new Updater({ send: (status) => send('update-status', status), enabled: () => library.data.settings.autoUpdate !== false });
+
+  // Let the renderer list and pick audio output devices (USB DACs, headphones, …).
+  const allowed = new Set(['media', 'speaker-selection']);
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowed.has(permission));
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(allowed.has(permission)));
   nativeTheme.on('updated', () => { if (!isMac && win) win.setTitleBarOverlay(overlayColors()); });
 
   registerProtocol();
@@ -282,6 +322,8 @@ app.whenReady().then(() => {
 
   win.webContents.once('did-finish-load', () => {
     if (library.data.settings.folders.length) library.scan();
+    library.watch();
+    updater.schedule();
     const argvFiles = isMac ? [] : process.argv.slice(1).filter((a) => !a.startsWith('-') && path.isAbsolute(a) && a !== app.getAppPath());
     openPaths([...pendingOpen.splice(0), ...argvFiles]);
     if (process.env.CHEW_CAPTURE) captureAndQuit(process.env.CHEW_CAPTURE);
@@ -291,4 +333,4 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { if (!isMac) app.quit(); });
-app.on('before-quit', () => { library?.saveNow(); });
+app.on('before-quit', () => { library?.saveNow(); saveSessionNow(); library?.unwatch(); });

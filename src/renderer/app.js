@@ -22,6 +22,8 @@ const S = {
   artists: [],
   view: 'songs',
   param: null,
+  devices: [],
+  update: null,
   history: [],
   search: '',
   sort: { key: 'artist', dir: 1 },
@@ -197,6 +199,27 @@ function trackTable(list, opts = {}) {
 }
 
 // ---------------------------------------------------------------- views
+
+const toggle = (key) => `<label class="switch"><input type="checkbox" data-setting="${key}" ${S.settings[key] !== false ? 'checked' : ''}><span></span></label>`;
+
+function outputOptions() {
+  const current = S.settings.outputDevice || 'default';
+  const list = S.devices.length ? S.devices : [{ deviceId: 'default', label: 'System default' }];
+  return list.map((d) => `<option value="${esc(d.deviceId)}" ${d.deviceId === current ? 'selected' : ''}>${esc(d.label)}</option>`).join('');
+}
+
+function updateText() {
+  const u = S.update || {};
+  switch (u.state) {
+    case 'checking': return 'Checking for updates…';
+    case 'current': return `You’re up to date (version ${S.info.version}).`;
+    case 'available': return `Version ${u.version} is available.`;
+    case 'downloading': return `Downloading version ${u.version}… ${u.percent || 0}%`;
+    case 'ready': return `Version ${u.version} is ready to install.`;
+    case 'error': return `Couldn’t check for updates: ${u.message || 'unknown error'}`;
+    default: return `You’re running version ${S.info.version}.`;
+  }
+}
 
 const VIEWS = {
   songs() {
@@ -411,6 +434,9 @@ const VIEWS = {
           <div class="hint">${plural(S.tracks.filter((t) => t.root === p).length, 'song')}</div></div>
           <button class="btn ghost" data-act="reveal-folder" data-path="${esc(p)}">Show</button>
           <button class="btn danger" data-act="remove-folder" data-path="${esc(p)}">Remove</button></div>`).join('')}
+        <div class="box-row"><div class="grow"><div>Watch folders for changes</div>
+          <div class="hint">New, changed and deleted files are picked up automatically, without a manual rescan.</div></div>
+          ${toggle('watchFolders')}</div>
         <div class="box-row"><div class="grow hint">Chew Player never moves, renames or rewrites your files. Edits are stored in its own library.</div>
           <button class="btn ghost" data-act="rescan">Rescan</button>
           <button class="btn" data-act="add-folder">${icon('plus')}Add Folder…</button></div>
@@ -430,10 +456,31 @@ const VIEWS = {
         <div class="segmented">${['system', 'light', 'dark'].map((t) => `<button data-theme="${t}" class="${t === theme ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div></div>
 
       <h3>Playback</h3>
-      <div class="box"><div class="box-row"><div class="grow"><div>Format support</div>
+      <div class="box">
+        <div class="box-row"><div class="grow"><div>Gapless playback</div>
+          <div class="hint">Songs flow into each other without a pause, as on live and concept albums.</div></div>
+          ${toggle('gapless')}</div>
+        <div class="box-row"><div class="grow"><div>Volume leveling (ReplayGain)</div>
+          <div class="hint">Evens out loudness between songs using the ReplayGain values stored in the files. “Smart” uses album gain when playing in order and track gain when shuffling.</div></div>
+          <div class="segmented">${[['off', 'Off'], ['track', 'Track'], ['album', 'Album'], ['auto', 'Smart']].map(([v, l]) => `<button data-rg="${v}" class="${(S.settings.replayGain || 'auto') === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        <div class="box-row"><div class="grow"><div>Output device</div>
+          <div class="hint">Play through a specific device, such as a USB DAC or headphones.</div></div>
+          <select class="select" id="output-select">${outputOptions()}</select></div>
+        <div class="box-row"><div class="grow"><div>Format support</div>
         <div class="hint">${S.info.ffmpeg
           ? 'MP3, AAC, FLAC, Ogg, Opus and WAV play natively. Everything else (ALAC, AIFF, WMA, APE, WavPack, Musepack, DSD, …) is decoded on the fly with the bundled FFmpeg.'
           : 'FFmpeg was not found, so only MP3, AAC, FLAC, Ogg, Opus and WAV can be played.'}</div></div></div></div>
+
+      <h3>Updates</h3>
+      <div class="box">
+        <div class="box-row"><div class="grow"><div>Check for updates automatically</div>
+          <div class="hint">${S.info.platform === 'win32' ? 'New versions are downloaded in the background and installed when you restart.' : 'You’ll be notified when a new version is available.'}</div></div>
+          ${toggle('autoUpdate')}</div>
+        <div class="box-row"><div class="grow hint" id="update-text">${esc(updateText())}</div>
+          ${S.update?.state === 'ready' || S.update?.state === 'available'
+            ? `<button class="btn" data-act="install-update">${S.update.state === 'ready' ? 'Restart & Update' : 'Download'}</button>`
+            : '<button class="btn ghost" data-act="check-update">Check Now</button>'}</div>
+      </div>
 
       <h3>About</h3>
       <div class="box"><div class="box-row"><img src="logo.svg" width="40" height="40" alt="">
@@ -750,14 +797,14 @@ seek.addEventListener('change', () => {
 volume.addEventListener('input', () => setVolume(volume.value / 100));
 let lastVolume = 0.8;
 $('#btn-mute').addEventListener('click', () => {
-  if (player.audio.volume > 0) { lastVolume = player.audio.volume; setVolume(0); } else setVolume(lastVolume || 0.8);
+  if (player.volume > 0) { lastVolume = player.volume; setVolume(0); } else setVolume(lastVolume || 0.8);
 });
 $('#btn-play').addEventListener('click', () => player.toggle());
 $('#btn-next').addEventListener('click', () => player.next());
 $('#btn-prev').addEventListener('click', () => player.prev());
 $('#btn-shuffle').addEventListener('click', () => { player.setShuffle(!player.shuffle); syncToggles(); chew.setSetting('shuffle', player.shuffle); });
 $('#btn-repeat').addEventListener('click', () => {
-  player.repeat = { off: 'all', all: 'one', one: 'off' }[player.repeat];
+  player.setRepeat({ off: 'all', all: 'one', one: 'off' }[player.repeat]);
   syncToggles();
   chew.setSetting('repeat', player.repeat);
 });
@@ -845,6 +892,13 @@ document.addEventListener('click', async (e) => {
   if (artist) return go('artist', artist.dataset.artist);
   const folder = e.target.closest('[data-folder]');
   if (folder) return go('folders', folder.dataset.folder || null);
+  const rg = e.target.closest('[data-rg]');
+  if (rg) {
+    S.settings.replayGain = rg.dataset.rg;
+    player.setReplayGain(rg.dataset.rg);
+    chew.setSetting('replayGain', rg.dataset.rg);
+    return render();
+  }
   const theme = e.target.closest('[data-theme]');
   if (theme) {
     S.settings.theme = theme.dataset.theme;
@@ -866,6 +920,13 @@ document.addEventListener('click', async (e) => {
     case 'rescan': chew.scan(); break;
     case 'fetch': chew.fetchMissing(); break;
     case 'website': window.open('https://fmatsch.github.io/chew-player/'); break;
+    case 'check-update': {
+      const st = await chew.updates.check();
+      setUpdate(st);
+      if (st?.state === 'current') toast('You’re up to date');
+      break;
+    }
+    case 'install-update': chew.updates.install(); break;
     case 'play': playFrom(list, 0); break;
     case 'shuffle': playFrom(list, 0, true); break;
     case 'lookup': lookup(list.map((t) => t.id)); break;
@@ -878,7 +939,12 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', (e) => {
   const key = e.target.dataset?.setting;
-  if (key) { S.settings[key] = e.target.checked; chew.setSetting(key, e.target.checked); }
+  if (key) {
+    S.settings[key] = e.target.checked;
+    chew.setSetting(key, e.target.checked);
+    if (key === 'gapless') player.setGapless(e.target.checked);
+  }
+  if (e.target.id === 'output-select') chooseOutput(e.target.value);
 });
 
 document.addEventListener('dblclick', (e) => {
@@ -992,14 +1058,93 @@ chew.onCommand(async (cmd) => {
   if (cmd === 'toggle') player.toggle();
   else if (cmd === 'next') player.next();
   else if (cmd === 'prev') player.prev();
-  else if (cmd === 'vol-up') setVolume(player.audio.volume + 0.05);
-  else if (cmd === 'vol-down') setVolume(player.audio.volume - 0.05);
+  else if (cmd === 'vol-up') setVolume(player.volume + 0.05);
+  else if (cmd === 'vol-down') setVolume(player.volume - 0.05);
   else if (cmd === 'shuffle') $('#btn-shuffle').click();
   else if (cmd === 'repeat') $('#btn-repeat').click();
   else if (cmd === 'find') { if (S.current?.noSearch) go('songs'); search.focus(); search.select(); }
   else if (cmd === 'new-playlist') newPlaylist();
   else if (cmd.startsWith('show-playlist:')) { await loadState(); go('playlist', cmd.slice(14)); }
 });
+
+// ---------------------------------------------------------------- session
+
+// Queue and position survive restarts. The full queue is only sent when it changes;
+// while playing just the position is updated every few seconds.
+let lastSessionSave = 0;
+function saveSession(full) {
+  if (!player.queue.length) return;
+  const snap = player.snapshot();
+  chew.session.set(full ? snap : { pos: snap.pos, time: snap.time });
+  lastSessionSave = Date.now();
+}
+player.addEventListener('queue', () => saveSession(true));
+player.addEventListener('track', () => saveSession(true));
+player.addEventListener('state', () => saveSession(false));
+player.addEventListener('time', () => { if (Date.now() - lastSessionSave > 3000) saveSession(false); });
+window.addEventListener('beforeunload', () => saveSession(true));
+
+// ---------------------------------------------------------------- output devices
+
+async function refreshDevices() {
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    const outs = all.filter((d) => d.kind === 'audiooutput' && d.deviceId !== 'communications');
+    S.devices = outs.map((d) => ({
+      deviceId: d.deviceId,
+      label: d.deviceId === 'default' ? `System default${d.label ? ` (${d.label.replace(/^Default - /, '')})` : ''}` : d.label || 'Unknown device',
+    }));
+  } catch {
+    S.devices = [];
+  }
+  const wanted = S.settings.outputDevice || 'default';
+  // A device that was unplugged falls back to the system default until it comes back.
+  const target = S.devices.some((d) => d.deviceId === wanted) ? wanted : 'default';
+  if (target !== S.activeDevice) {
+    S.activeDevice = target;
+    await player.setOutputDevice(target);
+  }
+  const sel = $('#output-select');
+  if (sel) sel.innerHTML = outputOptions();
+}
+
+async function chooseOutput(deviceId) {
+  S.settings.outputDevice = deviceId;
+  chew.setSetting('outputDevice', deviceId);
+  S.activeDevice = deviceId;
+  const ok = await player.setOutputDevice(deviceId);
+  const name = S.devices.find((d) => d.deviceId === deviceId)?.label || 'device';
+  toast(ok ? `Playing through ${name}` : `Couldn’t switch to ${name}`);
+  const sel = $('#output-select');
+  if (sel) sel.innerHTML = outputOptions();
+}
+
+navigator.mediaDevices?.addEventListener('devicechange', refreshDevices);
+
+$('#btn-output').addEventListener('click', async () => {
+  await refreshDevices();
+  const current = S.activeDevice || 'default';
+  const choice = await chew.contextMenu(S.devices.map((d) => ({ id: d.deviceId, label: d.label, checked: d.deviceId === current })));
+  if (choice) chooseOutput(choice);
+});
+
+// ---------------------------------------------------------------- updates
+
+function setUpdate(st) {
+  S.update = st;
+  const banner = $('#update');
+  const show = st && ['available', 'downloading', 'ready'].includes(st.state);
+  banner.hidden = !show;
+  if (show) {
+    $('#update-label').textContent = st.state === 'downloading' ? `Downloading ${st.version}… ${st.percent || 0}%` : `Chew Player ${st.version} is available`;
+    const btn = $('#update-btn');
+    btn.hidden = st.state === 'downloading';
+    btn.textContent = st.state === 'ready' ? 'Restart & Update' : 'Download';
+  }
+  if (S.view === 'settings') render();
+}
+chew.onUpdateStatus(setUpdate);
+$('#update-btn').addEventListener('click', () => chew.updates.install());
 
 // ---------------------------------------------------------------- boot
 
@@ -1012,7 +1157,14 @@ chew.onCommand(async (cmd) => {
   await loadState();
   player.shuffle = !!S.settings.shuffle;
   player.repeat = S.settings.repeat || 'off';
+  player.gapless = S.settings.gapless !== false;
+  player.setReplayGain(S.settings.replayGain || 'auto');
   setVolume(S.settings.volume ?? 0.8, false);
+  await refreshDevices();
+  const session = await chew.session.get();
+  if (session) player.restore(session);
+  setUpdate(await chew.updates.status());
+  window.chewPlayer = player; // handy in DevTools
   syncToggles();
   renderNowPlaying();
   renderTime();

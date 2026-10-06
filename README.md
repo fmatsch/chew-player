@@ -33,6 +33,14 @@ cloud, no subscription. It never moves, renames or rewrites your files.
   `cover.jpg`/`folder.jpg` in the folder, or from the [Cover Art Archive](https://coverartarchive.org).
 - **Playlists**: create, rename and reorder them by drag and drop. Import and export them as `.m3u`/`.m3u8`.
 - **Queue, shuffle and repeat**: "Play Next", "Add to Queue", repeat all or repeat one.
+- **Gapless playback**: tracks flow into each other without a pause, which matters for live and concept albums.
+- **Volume leveling**: uses the ReplayGain (and Opus R128) values stored in your files. You can choose track, album or
+  "smart" mode, which uses album gain when playing in order and track gain when shuffling. Peaks are protected from clipping.
+- **Output device selection**: play through a USB DAC, headphones or any other device without changing the system default.
+- **Watches your folders**: new, changed or deleted files are picked up automatically.
+- **Picks up where you left off**: the queue and playback position are restored after a restart.
+- **Updates**: on Windows, new versions download in the background and install on restart. On macOS you get a
+  notification with a download link, because auto-installing needs a paid Apple signing certificate.
 - **Edit info**: correct tags for one song or many at once. Your edits are stored in Chew Player's
   library, so the files themselves stay untouched.
 - **Flat, quiet design**: light and dark themes that follow the system, and media keys.
@@ -91,7 +99,8 @@ src/main/main.js      window, menus, IPC and the chew:// media protocol (byte ra
 src/main/library.js   folder scanning, tag reading (music-metadata), playlists, JSON persistence
 src/main/online.js    MusicBrainz + Cover Art Archive lookups (rate-limited to 1 req/s)
 src/main/ffmpeg.js    FFmpeg discovery and on-the-fly decoding for exotic formats
-src/renderer/         the UI: views, virtualised track table, player engine
+src/main/updater.js   update checks (electron-updater on Windows, GitHub release check on macOS)
+src/renderer/         the UI: views, virtualised track table, Web Audio player engine (gapless, ReplayGain)
 docs/                 the GitHub Pages website
 ```
 

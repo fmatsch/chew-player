@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' chew: data:; media-src chew:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' chew: data:; media-src chew:; connect-src chew:; style-src 'self' 'unsafe-inline'; script-src 'self'">
   <title>Chew Player</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -27,6 +27,10 @@
         <div id="playlists"></div>
       </nav>
       <div class="sidebar-foot">
+        <div class="update-banner" id="update" hidden>
+          <span id="update-label"></span>
+          <button class="btn small" id="update-btn">Download</button>
+        </div>
         <div class="status" id="status" hidden>
           <div class="status-text"><span id="status-label"></span><button class="link" id="status-cancel" hidden>Stop</button></div>
           <div class="progress"><div id="status-bar"></div></div>
@@ -80,6 +84,7 @@
       </div>
       <div class="volume">
         <span class="tech" id="now-tech"></span>
+        <button class="icon-btn" id="btn-output" title="Output device"><i data-icon="output"></i></button>
         <button class="icon-btn" id="btn-mute" title="Mute"><i data-icon="volume"></i></button>
         <input type="range" id="volume" min="0" max="100" value="80">
       </div>
