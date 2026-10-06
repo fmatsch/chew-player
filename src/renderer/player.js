@@ -157,6 +157,20 @@ export class Player extends EventTarget {
     this.emit('queue');
   }
 
+  // Make another queue entry current without playing it here (used while casting to a TV).
+  cue(orderPos) {
+    if (orderPos < 0 || orderPos >= this.order.length) return false;
+    this.cancelHandoff();
+    this.stopBuffer();
+    this.mode = 'element';
+    this.audio.pause();
+    this.pos = orderPos;
+    this.track = this.getTrack(this.currentId);
+    this.emit('track', this.track);
+    this.emit('state');
+    return true;
+  }
+
   jumpTo(orderPos) {
     if (orderPos < 0 || orderPos >= this.order.length) return;
     this.pos = orderPos;

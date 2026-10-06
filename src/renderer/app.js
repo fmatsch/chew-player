@@ -1,16 +1,11 @@
 import { icon, hydrateIcons, setIcon, noteMask } from './icons.js';
 import { Player } from './player.js';
 import { TrackTable, fmtTime } from './table.js';
+import { $, esc, collator, plural, coverUrl, coverDiv, sortName, toast, el } from './util.js';
+import { evaluate, describe, editSmart } from './smart.js';
+import { initVideo } from './video.js';
 
 const chew = window.chew;
-const $ = (sel, root = document) => root.querySelector(sel);
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
-const coverUrl = (p) => `chew://cover/?p=${encodeURIComponent(p).replace(/'/g, '%27')}`;
-const coverDiv = (p, cls = '') => `<div class="cover ${p ? '' : 'empty'} ${cls}"${p ? ` style="background-image:url('${coverUrl(p)}')"` : ''}></div>`;
-const sortName = (s) => (s || '').replace(/^the\s+/i, '');
-
 const S = {
   tracks: [],
   byId: new Map(),
@@ -123,13 +118,14 @@ async function loadState() {
 
 function go(view, param = null, push = true) {
   if (push && (S.view !== view || S.param !== param)) S.history.push([S.view, S.param]);
-  if (['songs', 'albums', 'artists', 'folders', 'queue', 'settings', 'playlist'].includes(view) && view !== 'folders') S.history = [];
-  if (view === 'folders' && param === null) S.history = [];
+  if (['songs', 'albums', 'artists', 'queue', 'settings', 'playlist', 'vhome', 'movies', 'shows'].includes(view)) S.history = [];
+  if ((view === 'folders' || view === 'vfolders') && param === null) S.history = [];
   S.view = view;
   S.param = param;
   for (const b of document.querySelectorAll('.nav-item')) {
     b.classList.toggle('active', b.dataset.view === view || (view === 'album' && b.dataset.view === 'albums')
-      || (view === 'artist' && b.dataset.view === 'artists') || (view === 'playlist' && b.dataset.playlist === param));
+      || (view === 'artist' && b.dataset.view === 'artists') || (view === 'playlist' && b.dataset.playlist === param)
+      || (view === 'movie' && b.dataset.view === (video.get(param)?.type === 'episode' ? 'shows' : 'movies')) || (view === 'show' && b.dataset.view === 'shows'));
   }
   render(false);
 }
@@ -146,7 +142,8 @@ function render(keep = true) {
   const selected = keep && S.table ? new Set(S.table.selected) : null;
   S.table = null;
 
-  const v = VIEWS[S.view](S.param) || VIEWS.songs();
+  const fn = VIEWS[S.view] || video.views[S.view] || VIEWS.songs;
+  const v = fn(S.param) || VIEWS.songs();
   S.current = v;
   $('#view-title').textContent = v.title;
   $('#view-subtitle').textContent = v.subtitle || '';
@@ -161,12 +158,6 @@ function render(keep = true) {
   scrolls.forEach((y, i) => { if (els[i]) els[i].scrollTop = y; });
 }
 
-function el(html) {
-  const d = document.createElement('div');
-  d.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0';
-  d.innerHTML = html;
-  return d;
-}
 
 function welcome() {
   const d = el(`<div class="empty-state">
@@ -193,6 +184,7 @@ function trackTable(list, opts = {}) {
     onReorder: opts.onReorder,
     onDelete: opts.onDelete,
     isPlaying: opts.isPlaying || ((t) => t.id === player.currentId && !!player.track),
+    onRate: (id, n) => { const t = S.byId.get(id); rateIds([id], t?.rating === n ? 0 : n); },
   });
   S.table = t;
   return t.el;
@@ -227,7 +219,7 @@ const VIEWS = {
     const list = sortTracks(S.tracks.filter(matches), S.sort);
     const dur = list.reduce((s, t) => s + (t.duration || 0), 0);
     const d = el('');
-    d.append(list.length ? trackTable(list, { sortable: true, columns: ['num', 'title', 'artist', 'album', 'year', 'genre', 'time', 'format'] }) : emptyResult('No songs match your search.'));
+    d.append(list.length ? trackTable(list, { sortable: true, columns: ['num', 'title', 'artist', 'album', 'year', 'genre', 'rating', 'time', 'format'] }) : emptyResult('No songs match your search.'));
     return { title: 'Songs', subtitle: `${plural(list.length, 'song')} · ${fmtTime(dur)}`, list, el: d };
   },
 
@@ -392,6 +384,8 @@ const VIEWS = {
   playlist(id) {
     const p = S.playlists.find((x) => x.id === id);
     if (!p) return VIEWS.songs();
+    if (kindOf(p) === 'video') return video.playlistView(p);
+    if (p.smart) return smartPlaylistView(p);
     const list = p.trackIds.map((tid) => S.byId.get(tid) || { id: tid, title: 'Missing file', missing: true });
     const dur = list.reduce((s, t) => s + (t.duration || 0), 0);
     const d = el(`<div class="detail-head" style="padding-bottom:12px">
@@ -442,13 +436,25 @@ const VIEWS = {
           <button class="btn" data-act="add-folder">${icon('plus')}Add Folder…</button></div>
       </div>
 
+      <h3>Video folders</h3>
+      <div class="box">
+        ${video.folders().map((p) => `<div class="box-row">${icon('film')}<div class="grow"><div class="path" title="${esc(p)}">${esc(p)}</div>
+          <div class="hint">${plural(video.items().filter((i) => i.root === p).length, 'video')}</div></div>
+          <button class="btn ghost" data-act="reveal-folder" data-path="${esc(p)}">Show</button>
+          <button class="btn danger" data-act="remove-video-folder" data-path="${esc(p)}">Remove</button></div>`).join('')}
+        <div class="box-row"><div class="grow hint">Movies and TV episodes are recognised from file and folder names. Posters and descriptions come from Wikipedia/Wikidata and TVMaze.</div>
+          <button class="btn ghost" data-act="rescan-video">Rescan</button>
+          <button class="btn" data-act="add-video-folder">${icon('plus')}Add Folder…</button></div>
+      </div>
+
       <h3>Online information</h3>
       <div class="box">
         <div class="box-row"><div class="grow"><div>Look up missing tags and album art automatically</div>
           <div class="hint">Uses the open MusicBrainz and Cover Art Archive databases after each scan.</div></div>
           <label class="switch"><input type="checkbox" data-setting="autoFetch" ${S.settings.autoFetch ? 'checked' : ''}><span></span></label></div>
         <div class="box-row"><div class="grow hint">Run a lookup now for every song with incomplete info or without cover art.</div>
-          <button class="btn ghost" data-act="fetch">${icon('globe')}Fetch Missing Info</button></div>
+          <button class="btn ghost" data-act="fetch">${icon('globe')}Music</button>
+          <button class="btn ghost" data-act="fetch-video">${icon('globe')}Videos</button></div>
       </div>
 
       <h3>Appearance</h3>
@@ -491,6 +497,65 @@ const VIEWS = {
   },
 };
 
+function smartPlaylistView(p) {
+  const list = evaluate(p, S.tracks, 'audio');
+  const dur = list.reduce((s, t) => s + (t.duration || 0), 0);
+  const d = el(`<div class="detail-head" style="padding-bottom:12px">
+    <div>
+      <div class="smart-desc">${icon('smart')}<span>${esc(describe(p.smart, 'audio'))}</span></div>
+      <div class="actions">
+        <button class="btn" data-act="play">${icon('play')}Play</button>
+        <button class="btn ghost" data-act="shuffle">${icon('shuffle')}Shuffle</button>
+        <button class="btn ghost" data-act="edit-smart">Edit Rules…</button>
+        <button class="btn ghost" data-act="export-playlist">Export M3U…</button>
+        <button class="btn danger" data-act="delete-playlist">Delete</button>
+      </div>
+    </div></div>`);
+  if (!list.length) d.append(emptyResult('No songs match these rules yet.'));
+  else d.append(trackTable(list, { columns: ['index', 'title', 'artist', 'album', 'rating', 'plays', 'time', 'format'] }));
+  return { title: p.name, subtitle: `${plural(list.length, 'song')} · ${fmtTime(dur)}`, list, el: d, noSearch: true, ownActions: true };
+}
+
+const kindOf = (p) => p.kind || 'audio';
+const exportPlaylist = (id) => {
+  const p = S.playlists.find((x) => x.id === id);
+  return chew.playlists.export(id, p?.smart ? evaluate(p, S.tracks, 'audio').map((t) => t.id) : null);
+};
+const addablePlaylists = (kind = 'audio') => S.playlists.filter((p) => !p.smart && kindOf(p) === kind);
+const playlistSubmenu = (kind = 'audio') => {
+  const lists = addablePlaylists(kind);
+  return [{ id: 'pl:new', label: 'New Playlist…' }, ...(lists.length ? [{ type: 'separator' }] : []), ...lists.map((p) => ({ id: `pl:${p.id}`, label: p.name }))];
+};
+const ratingSubmenu = (current) => [0, 1, 2, 3, 4, 5].map((n) => ({ id: `rate:${n}`, label: n ? '★'.repeat(n) : 'None', checked: (current || 0) === n }));
+
+async function rateIds(ids, n) {
+  for (const id of ids) { const t = S.byId.get(id); if (t) t.rating = n || null; }
+  if (S.table) S.table.refresh();
+  await chew.rate(ids, n);
+}
+
+async function newSmartPlaylist(kind = 'audio') {
+  const items = kind === 'video' ? (window.chewVideo?.items() || []) : S.tracks;
+  const r = await editSmart({ kind, countFor: (pl) => evaluate(pl, items, kind).length });
+  if (!r) return;
+  const p = await chew.playlists.create(r.name, [], { kind, smart: r.smart });
+  S.playlists.push(p);
+  renderPlaylists();
+  go('playlist', p.id);
+}
+
+async function editSmartPlaylist(p) {
+  const kind = kindOf(p);
+  const items = kind === 'video' ? (window.chewVideo?.items() || []) : S.tracks;
+  const r = await editSmart({ name: p.name, smart: p.smart, kind, countFor: (pl) => evaluate(pl, items, kind).length });
+  if (!r) return;
+  p.name = r.name;
+  p.smart = r.smart;
+  await chew.playlists.update(p.id, { name: r.name, smart: r.smart });
+  renderPlaylists();
+  render();
+}
+
 // ---------------------------------------------------------------- actions
 
 function playFrom(list, i, shuffle = false) {
@@ -508,8 +573,8 @@ function removeFromPlaylist(p, indices) {
   render();
 }
 
-async function newPlaylist(ids = []) {
-  const p = await chew.playlists.create('New Playlist', ids);
+async function newPlaylist(ids = [], kind = S.mode || 'audio') {
+  const p = await chew.playlists.create('New Playlist', ids, { kind });
   S.playlists.push(p);
   renderPlaylists();
   go('playlist', p.id);
@@ -521,7 +586,7 @@ function addToPlaylist(pid, ids) {
   if (!p) return;
   p.trackIds.push(...ids);
   chew.playlists.update(pid, { add: ids });
-  toast(`Added ${plural(ids.length, 'song')} to “${p.name}”`);
+  toast(`Added ${plural(ids.length, kindOf(p) === 'video' ? 'video' : 'song')} to “${p.name}”`);
   renderPlaylists();
   if (S.view === 'playlist' && S.param === pid) render();
 }
@@ -539,11 +604,8 @@ async function trackMenu(ids, ctx) {
     { id: 'next', label: 'Play Next' },
     { id: 'queue', label: 'Add to Queue' },
     { type: 'separator' },
-    { label: 'Add to Playlist', submenu: [
-      { id: 'pl:new', label: 'New Playlist…' },
-      ...(S.playlists.length ? [{ type: 'separator' }] : []),
-      ...S.playlists.map((p) => ({ id: `pl:${p.id}`, label: p.name })),
-    ] },
+    { label: 'Add to Playlist', submenu: playlistSubmenu('audio') },
+    { label: 'Rating', submenu: ratingSubmenu(ids.length === 1 ? S.byId.get(ids[0])?.rating : null) },
     { type: 'separator' },
     { id: 'info', label: ids.length > 1 ? 'Edit Info…' : 'Get Info…' },
     { id: 'lookup', label: 'Look Up Online' },
@@ -559,6 +621,7 @@ async function trackMenu(ids, ctx) {
   else if (choice === 'queue') { player.enqueue(tracks.map((t) => t.id)); toast(`Added ${plural(tracks.length, 'song')} to the queue`); }
   else if (choice === 'pl:new') newPlaylist(ids);
   else if (choice.startsWith('pl:')) addToPlaylist(choice.slice(3), ids);
+  else if (choice.startsWith('rate:')) rateIds(ids, Number(choice.slice(5)));
   else if (choice === 'info') openInfo(ids);
   else if (choice === 'lookup') lookup(ids);
   else if (choice === 'reveal') chew.reveal(ids[0]);
@@ -573,11 +636,7 @@ async function groupMenu(tracks, extra = []) {
     { id: 'next', label: 'Play Next' },
     { id: 'queue', label: 'Add to Queue' },
     { type: 'separator' },
-    { label: 'Add to Playlist', submenu: [
-      { id: 'pl:new', label: 'New Playlist…' },
-      ...(S.playlists.length ? [{ type: 'separator' }] : []),
-      ...S.playlists.map((p) => ({ id: `pl:${p.id}`, label: p.name })),
-    ] },
+    { label: 'Add to Playlist', submenu: playlistSubmenu('audio') },
     { id: 'lookup', label: 'Look Up Online' },
     ...extra,
   ];
@@ -668,9 +727,10 @@ function openInfo(ids) {
 function renderPlaylists() {
   const box = $('#playlists');
   if (box.querySelector('input')) return; // don't clobber an active rename
-  box.innerHTML = S.playlists.map((p) => `
-    <button class="nav-item${S.view === 'playlist' && S.param === p.id ? ' active' : ''}" data-playlist="${p.id}">
-      ${icon('playlist')}<span>${esc(p.name)}</span><span class="count">${p.trackIds.length || ''}</span>
+  const mode = S.mode || 'audio';
+  box.innerHTML = S.playlists.filter((p) => kindOf(p) === mode).map((p) => `
+    <button class="nav-item${S.view === 'playlist' && S.param === p.id ? ' active' : ''}${p.smart ? ' smart' : ''}" data-playlist="${p.id}">
+      ${icon(p.smart ? 'smart' : 'playlist')}<span>${esc(p.name)}</span><span class="count">${p.smart ? '' : (p.trackIds.length || '')}</span>
     </button>`).join('');
 }
 
@@ -743,8 +803,9 @@ function renderNowPlaying() {
 }
 
 function renderTime() {
-  const cur = player.currentTime;
-  const dur = player.duration;
+  const remote = castingAudio();
+  const cur = remote ? cast.status.position : player.currentTime;
+  const dur = remote ? cast.status.duration || player.duration : player.duration;
   $('#time-cur').textContent = fmtTime(cur);
   $('#time-dur').textContent = fmtTime(dur);
   if (!seeking) {
@@ -791,6 +852,7 @@ seek.addEventListener('input', () => {
   $('#time-cur').textContent = fmtTime((seek.value / 1000) * player.duration);
 });
 seek.addEventListener('change', () => {
+  if (castingAudio()) { chew.cast.control('seek', (seek.value / 1000) * (cast.status.duration || player.duration)); seeking = false; return; }
   player.seek((seek.value / 1000) * player.duration);
   seeking = false;
 });
@@ -799,9 +861,9 @@ let lastVolume = 0.8;
 $('#btn-mute').addEventListener('click', () => {
   if (player.volume > 0) { lastVolume = player.volume; setVolume(0); } else setVolume(lastVolume || 0.8);
 });
-$('#btn-play').addEventListener('click', () => player.toggle());
-$('#btn-next').addEventListener('click', () => player.next());
-$('#btn-prev').addEventListener('click', () => player.prev());
+$('#btn-play').addEventListener('click', () => (castingAudio() ? chew.cast.control(cast.status.state === 'playing' ? 'pause' : 'play') : player.toggle()));
+$('#btn-next').addEventListener('click', () => (castingAudio() ? castMusicStep(1) : player.next()));
+$('#btn-prev').addEventListener('click', () => (castingAudio() ? (cast.status.position > 3 ? chew.cast.control('seek', 0) : castMusicStep(-1)) : player.prev()));
 $('#btn-shuffle').addEventListener('click', () => { player.setShuffle(!player.shuffle); syncToggles(); chew.setSetting('shuffle', player.shuffle); });
 $('#btn-repeat').addEventListener('click', () => {
   player.setRepeat({ off: 'all', all: 'one', one: 'off' }[player.repeat]);
@@ -821,20 +883,13 @@ if ('mediaSession' in navigator) {
 
 // ---------------------------------------------------------------- status & toasts
 
-function toast(msg) {
-  const t = document.createElement('div');
-  t.className = 'toast';
-  t.textContent = msg;
-  $('#toasts').append(t);
-  setTimeout(() => t.remove(), 3200);
-}
 
-const status = { scan: null, fetch: null };
+const status = { scan: null, fetch: null, vscan: null, vfetch: null };
 function renderStatus() {
   const box = $('#status');
   const bar = $('#status-bar');
   const prog = bar.parentElement;
-  const s = status.scan || status.fetch;
+  const s = status.scan || status.vscan || status.fetch || status.vfetch;
   box.hidden = !s;
   if (!s) return;
   $('#status-label').textContent = s.label;
@@ -844,21 +899,24 @@ function renderStatus() {
 }
 
 chew.onScanProgress((p) => {
-  if (p.phase === 'done') status.scan = null;
-  else if (p.phase === 'walk') status.scan = { label: `Finding music… ${p.total ? p.total.toLocaleString() : ''}`, done: 0, total: 0 };
-  else status.scan = { label: `Reading ${p.done.toLocaleString()} of ${p.total.toLocaleString()}`, done: p.done, total: p.total };
+  const key = p.source === 'video' ? 'vscan' : 'scan';
+  const what = p.source === 'video' ? 'videos' : 'music';
+  if (p.phase === 'done') status[key] = null;
+  else if (p.phase === 'walk') status[key] = { label: `Finding ${what}… ${p.total ? p.total.toLocaleString() : ''}`, done: 0, total: 0 };
+  else status[key] = { label: `Reading ${what} ${p.done.toLocaleString()} of ${p.total.toLocaleString()}`, done: p.done, total: p.total };
   renderStatus();
 });
 
 let lastErr = 0;
 chew.onFetchProgress((p) => {
+  const key = p.source === 'video' ? 'vfetch' : 'fetch';
   if (p.phase === 'done') {
-    status.fetch = null;
-    if (p.updated) toast(`Updated info for ${plural(p.updated, 'item')} from MusicBrainz`);
+    status[key] = null;
+    if (p.updated) toast(`Updated info for ${plural(p.updated, 'item')} from ${p.source === 'video' ? 'Wikipedia and TVMaze' : 'MusicBrainz'}`);
   } else if (p.phase === 'error') {
     if (Date.now() - lastErr > 10000) { lastErr = Date.now(); toast(`Online lookup: ${p.message}`); }
   } else if (p.phase === 'start' || p.phase === 'tags') {
-    status.fetch = { label: `Looking up info… ${p.done}/${p.total}`, done: p.done, total: p.total };
+    status[key] = { label: `Looking up ${p.source === 'video' ? 'video ' : ''}info… ${p.done}/${p.total}`, done: p.done, total: p.total };
   } else if (p.phase === 'covers') {
     status.fetch = { label: `Fetching album art… ${p.done}/${p.total}`, done: p.done, total: p.total };
   }
@@ -929,9 +987,17 @@ document.addEventListener('click', async (e) => {
     case 'install-update': chew.updates.install(); break;
     case 'play': playFrom(list, 0); break;
     case 'shuffle': playFrom(list, 0, true); break;
+    case 'vplay-list': video.play(list, 0); break;
+    case 'add-video-folder': chew.video.addFolder(); break;
+    case 'remove-video-folder':
+      if (await chew.confirm('Remove this video folder from the library?', `${act.dataset.path}\n\nThe files on disk are not touched.`, 'Remove')) await chew.video.removeFolder(act.dataset.path);
+      break;
+    case 'rescan-video': chew.video.scan(); break;
+    case 'fetch-video': chew.video.fetch(); break;
     case 'lookup': lookup(list.map((t) => t.id)); break;
-    case 'export-playlist': if (await chew.playlists.export(S.param)) toast('Playlist exported'); break;
+    case 'export-playlist': if (await exportPlaylist(S.param)) toast('Playlist exported'); break;
     case 'rename-playlist': startRename(S.param); break;
+    case 'edit-smart': { const p = S.playlists.find((x) => x.id === S.param); if (p) editSmartPlaylist(p); break; }
     case 'delete-playlist': deletePlaylist(S.param); break;
     default: break;
   }
@@ -960,14 +1026,16 @@ document.addEventListener('contextmenu', async (e) => {
     const p = S.playlists.find((x) => x.id === id);
     const choice = await chew.contextMenu([
       { id: 'play', label: 'Play' }, { id: 'shuffle', label: 'Shuffle' }, { type: 'separator' },
+      ...(p.smart ? [{ id: 'edit', label: 'Edit Rules…' }] : []),
       { id: 'rename', label: 'Rename' }, { id: 'export', label: 'Export as M3U…' }, { type: 'separator' },
       { id: 'delete', label: 'Delete Playlist' },
     ]);
-    const tracks = p.trackIds.map((t) => S.byId.get(t)).filter(Boolean);
+    const tracks = p.smart ? evaluate(p, S.tracks, 'audio') : p.trackIds.map((t) => S.byId.get(t)).filter(Boolean);
+    if (choice === 'edit') editSmartPlaylist(p);
     if (choice === 'play') playFrom(tracks, 0);
     if (choice === 'shuffle') playFrom(tracks, 0, true);
     if (choice === 'rename') startRename(id);
-    if (choice === 'export' && (await chew.playlists.export(id))) toast('Playlist exported');
+    if (choice === 'export' && (await exportPlaylist(id))) toast('Playlist exported');
     if (choice === 'delete') deletePlaylist(id);
     return;
   }
@@ -997,9 +1065,31 @@ document.addEventListener('contextmenu', async (e) => {
 });
 
 $('#back').addEventListener('click', back);
-$('#new-playlist').addEventListener('click', (e) => { e.stopPropagation(); newPlaylist(); });
-$('#play-all').addEventListener('click', () => playFrom(S.current?.list || [], 0));
-$('#shuffle-all').addEventListener('click', () => playFrom(S.current?.list || [], 0, true));
+$('#new-playlist').addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const choice = await chew.contextMenu([{ id: 'plain', label: 'New Playlist' }, { id: 'smart', label: 'New Smart Playlist…' }, { type: 'separator' }, { id: 'import', label: 'Import Playlist…' }]);
+  if (choice === 'plain') newPlaylist();
+  if (choice === 'smart') newSmartPlaylist(S.mode || 'audio');
+  if (choice === 'import') { const r = await chew.playlists.import(); if (r) { await loadState(); go('playlist', r.playlist.id); } }
+});
+const shuffled = (list) => { const a = [...list]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+$('#play-all').addEventListener('click', () => (S.mode === 'video' ? video.play(S.current?.list || [], 0) : playFrom(S.current?.list || [], 0)));
+$('#shuffle-all').addEventListener('click', () => (S.mode === 'video' ? video.play(shuffled(S.current?.list || []), 0) : playFrom(S.current?.list || [], 0, true)));
+
+// ---------------------------------------------------------------- music / video switch
+
+function setMode(mode, navigate = true) {
+  S.mode = mode;
+  document.body.classList.toggle('mode-video', mode === 'video');
+  for (const b of document.querySelectorAll('#mode-switch button')) b.classList.toggle('on', b.dataset.mode === mode);
+  renderPlaylists();
+  chew.setSetting('mode', mode);
+  if (navigate) go(mode === 'video' ? 'vhome' : 'songs');
+}
+$('#mode-switch').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-mode]');
+  if (b && b.dataset.mode !== S.mode) setMode(b.dataset.mode);
+});
 
 const search = $('#search');
 search.addEventListener('input', () => {
@@ -1066,6 +1156,40 @@ chew.onCommand(async (cmd) => {
   else if (cmd === 'new-playlist') newPlaylist();
   else if (cmd.startsWith('show-playlist:')) { await loadState(); go('playlist', cmd.slice(14)); }
 });
+
+// ---------------------------------------------------------------- play counts
+
+// A song counts as played once half of it (at most 4 minutes) has actually been heard, like scrobblers do.
+const listen = { id: null, secs: 0, counted: false, last: 0 };
+player.addEventListener('track', () => Object.assign(listen, { id: player.currentId, secs: 0, counted: false, last: player.currentTime }));
+player.addEventListener('time', () => {
+  const t = player.currentTime;
+  const delta = t - listen.last;
+  listen.last = t;
+  if (!player.playing || listen.counted || listen.id !== player.currentId) return;
+  if (delta > 0 && delta < 2) listen.secs += delta;
+  if (listen.secs >= Math.min((player.duration || 480) / 2, 240)) {
+    listen.counted = true;
+    const tr = S.byId.get(listen.id);
+    if (tr) { tr.plays = (tr.plays || 0) + 1; tr.lastPlayed = Date.now(); }
+    chew.markPlayed(listen.id);
+  }
+});
+
+// First start: a few classic smart playlists to show what they can do.
+async function seedSmartPlaylists() {
+  if (S.settings.smartSeeded) return;
+  const seeds = [
+    ['Top Rated', { match: 'all', rules: [{ field: 'rating', op: 'gt', value: '3' }], limit: null }],
+    ['Recently Added', { match: 'all', rules: [{ field: 'added', op: 'inLast', value: '30', unit: 'days' }], limit: { count: 200, by: 'newest' } }],
+    ['Most Played', { match: 'all', rules: [{ field: 'plays', op: 'gt', value: '0' }], limit: { count: 50, by: 'mostPlayed' } }],
+    ['Never Played', { match: 'all', rules: [{ field: 'lastPlayed', op: 'never' }], limit: null }],
+  ];
+  for (const [name, smart] of seeds) await chew.playlists.create(name, [], { kind: 'audio', smart });
+  S.settings.smartSeeded = true;
+  await chew.setSetting('smartSeeded', true);
+  await loadState();
+}
 
 // ---------------------------------------------------------------- session
 
@@ -1146,6 +1270,199 @@ function setUpdate(st) {
 chew.onUpdateStatus(setUpdate);
 $('#update-btn').addEventListener('click', () => chew.updates.install());
 
+// ---------------------------------------------------------------- casting
+
+const PROTOCOLS = { airplay: 'AirPlay', cast: 'Google Cast', dlna: 'DLNA' };
+const cast = { status: { active: false }, deviceId: null };
+const castingAudio = () => cast.status.active && cast.status.kind === 'audio';
+
+async function chooseDevice(kind) {
+  const devices = (await chew.cast.devices()).filter((d) => kind === 'audio' || d.video);
+  cast.devices = devices;
+  const st = cast.status;
+  const items = [{ id: 'local', label: 'This Computer', checked: !st.active }];
+  if (devices.length) {
+    for (const proto of ['airplay', 'cast', 'dlna']) {
+      const group = devices.filter((d) => d.protocol === proto);
+      if (!group.length) continue;
+      items.push({ type: 'separator' }, { label: PROTOCOLS[proto], enabled: false });
+      for (const d of group) items.push({ id: d.id, label: d.name, checked: st.active && st.deviceId === d.id });
+    }
+  } else {
+    items.push({ type: 'separator' }, { label: 'Looking for TVs and receivers…', enabled: false });
+  }
+  items.push({ type: 'separator' }, { id: 'help', label: 'Apple TV, Android TV & Fire TV help…' });
+  const choice = await chew.contextMenu(items);
+  if (choice === 'help') { showCastHelp(); return null; }
+  return choice;
+}
+
+// ---- music on a TV
+
+async function castMusic(deviceId, start) {
+  if (!player.track) { toast('Pick a song first'); return; }
+  cast.deviceId = deviceId;
+  player.pause();
+  const r = await chew.cast.play({ deviceId, kind: 'audio', id: player.currentId, start: start ?? player.currentTime });
+  if (r?.state === 'error') toast(r.message);
+}
+
+async function castMusicStep(dir, auto = false) {
+  let pos = dir > 0 ? (auto ? player.peekNext() : player.pos + 1) : player.pos - 1;
+  if (dir > 0 && pos >= player.order.length) pos = player.repeat !== 'off' ? 0 : null;
+  if (pos == null || pos < 0) { if (auto) chew.cast.control('stop'); return; }
+  player.cue(pos);
+  await castMusic(cast.deviceId, 0);
+}
+
+$('#btn-cast').addEventListener('click', async () => {
+  const choice = await chooseDevice('audio');
+  if (!choice) return;
+  if (choice === 'local') {
+    if (!castingAudio()) return;
+    const at = cast.status.position;
+    await chew.cast.control('stop');
+    player.load(true, at);
+    return;
+  }
+  castMusic(choice);
+});
+
+// ---- video on a TV (called by the video player)
+
+async function castVideo(action, arg) {
+  const vp = video.player;
+  if (action === 'menu') {
+    const choice = await chooseDevice('video');
+    if (!choice) return;
+    if (choice === 'local') {
+      if (!vp.remote) return;
+      const at = cast.status.position || vp.time;
+      await chew.cast.control('stop');
+      vp.setRemote(null);
+      vp.load(vp.item.playback === 'native' ? 'native' : vp.item.playback, at, true);
+      return;
+    }
+    cast.deviceId = choice;
+    const at = vp.time;
+    vp.video.pause();
+    vp.setRemote({ state: 'connecting', deviceName: cast.devices?.find?.((d) => d.id === choice)?.name || 'TV', position: at, duration: vp.duration });
+    const r = await chew.cast.play({ deviceId: choice, kind: 'video', id: vp.item.id, start: at, audio: vp.audioIndex, subtitle: vp.subIndex });
+    if (r?.state === 'error') { toast(r.message); vp.setRemote(null); }
+    return;
+  }
+  if (action === 'load') return chew.cast.play({ deviceId: cast.deviceId, kind: 'video', id: arg.item.id, start: arg.at, audio: vp.audioIndex, subtitle: vp.subIndex });
+  if (action === 'stop') { vp.remote = null; return chew.cast.control('stop'); }
+  return chew.cast.control(action, arg);
+}
+
+chew.onCastDevices((list) => { cast.devices = list; });
+
+chew.onCastStatus((st) => {
+  const prev = cast.status;
+  cast.status = st;
+  if (st.state === 'pin-required') { pairDialog(st); return; }
+  if (st.state === 'error') { toast(st.message || 'Casting failed'); }
+  const vp = video.player;
+  if (st.active && st.kind === 'video') {
+    if (vp.item) vp.setRemote(st);
+    if (st.state === 'ended') { if (vp.index < vp.queue.length - 1) vp.next(); else { chew.cast.control('stop'); vp.remote = null; vp.close(); } }
+  } else if (vp.remote && !st.active) {
+    vp.setRemote(null);
+  }
+  if (st.active && st.kind === 'audio') {
+    if (st.state === 'ended' && prev.state !== 'ended') castMusicStep(1, true);
+    renderCastMusic();
+  } else if (prev.active && prev.kind === 'audio') {
+    renderCastMusic();
+  }
+});
+
+function renderCastMusic() {
+  const on = castingAudio();
+  $('#btn-cast').classList.toggle('on', on);
+  $('#btn-cast').style.color = on ? 'var(--accent)' : '';
+  if (on) {
+    $('#now-tech').textContent = `▶ ${cast.status.deviceName}`;
+    setIcon($('#btn-play'), cast.status.state === 'playing' || cast.status.state === 'buffering' ? 'pause' : 'play');
+  } else {
+    renderNowPlaying();
+    setIcon($('#btn-play'), player.playing ? 'pause' : 'play');
+  }
+  renderTime();
+}
+
+function pairDialog(st) {
+  const modal = $('#modal');
+  modal.innerHTML = `<div class="modal">
+    <h2>Pair with ${esc(st.deviceName)}</h2>
+    <div class="sub">This Apple TV only accepts paired devices. A 4-digit code is now shown on your TV — enter it here. You only have to do this once.</div>
+    <form class="form" onsubmit="return false"><label class="wide">Code on the TV<input id="pin" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="1234"></label></form>
+    <div class="hint" id="pin-msg" style="margin-top:10px"></div>
+    <div class="modal-actions"><div></div><div><button class="btn ghost" data-m="cancel">Cancel</button><button class="btn" data-m="pair">Pair</button></div></div>
+  </div>`;
+  modal.hidden = false;
+  const msg = $('#pin-msg');
+  chew.cast.pairStart(st.deviceId).then(() => $('#pin').focus()).catch((e) => { msg.textContent = `Couldn’t start pairing: ${e.message}`; });
+  const close = () => { modal.hidden = true; modal.innerHTML = ''; modal.onclick = modal.onkeydown = null; };
+  const pair = async () => {
+    msg.textContent = 'Pairing…';
+    try {
+      await chew.cast.pairFinish(st.deviceId, $('#pin').value.trim());
+      close();
+      toast(`Paired with ${st.deviceName}`);
+      const r = await chew.cast.play(st.pending);
+      if (r?.state === 'error') toast(r.message);
+    } catch (e) {
+      msg.textContent = /PIN/i.test(e.message) ? 'That code didn’t work. Check the TV and try again.' : e.message;
+    }
+  };
+  modal.onclick = (e) => {
+    const m = e.target.closest('[data-m]')?.dataset.m;
+    if (m === 'cancel' || e.target === modal) { close(); video.player.setRemote(null); }
+    if (m === 'pair') pair();
+  };
+  modal.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); pair(); } if (e.key === 'Escape') close(); };
+}
+
+function showCastHelp() {
+  const modal = $('#modal');
+  modal.innerHTML = `<div class="modal wide">
+    <h2>Playing on your TV</h2>
+    <div class="sub">Your computer and the TV must be on the same network. Chew Player converts files the TV can’t play on the fly.</div>
+    <div class="help">
+      <h4>${icon('tv')}Apple TV — AirPlay</h4>
+      <p>Appears automatically. The first time, the Apple TV shows a 4-digit code that you enter in Chew Player.</p>
+      <h4>${icon('tv')}Android TV, Google TV, Chromecast — Google Cast</h4>
+      <p>Appears automatically on TVs with “Chromecast built-in” (Sony, Philips, TCL, Nvidia Shield, Chromecast with Google TV, …).</p>
+      <h4>${icon('tv')}Amazon Fire TV Stick</h4>
+      <p>Fire TV has no built-in way to receive from a computer. Install a free receiver app from the Amazon Appstore, for example <b>AirScreen</b> (receives AirPlay, Google Cast and DLNA) or <b>Kodi</b> (enable <i>Settings → Services → UPnP/DLNA → Allow remote control</i>). The Fire TV then shows up here.</p>
+      <h4>${icon('tv')}Smart TVs (Samsung, LG, Panasonic, …) — DLNA</h4>
+      <p>Most smart TVs appear automatically as DLNA receivers. Turn on media sharing / DLNA in the TV’s network settings if yours doesn’t.</p>
+      ${S.info.platform === 'win32' ? '<p class="hint">Windows may ask whether Chew Player may use the network — allow it for private networks so the TV can fetch the video.</p>' : '<p class="hint">If macOS asks whether Chew Player may accept incoming connections, allow it so the TV can fetch the video.</p>'}
+    </div>
+    <div class="modal-actions"><div></div><div><button class="btn" data-m="ok">Got it</button></div></div>
+  </div>`;
+  hydrateIcons(modal);
+  modal.hidden = false;
+  modal.onclick = (e) => { if (e.target === modal || e.target.closest('[data-m]')) { modal.hidden = true; modal.innerHTML = ''; } };
+}
+
+// ---------------------------------------------------------------- video
+
+const video = initVideo({
+  S,
+  go: (...a) => go(...a),
+  render: (keep) => render(keep),
+  newPlaylist: (ids, kind) => newPlaylist(ids, kind),
+  addToPlaylist: (pid, ids) => addToPlaylist(pid, ids),
+  playlistSubmenu: (kind) => playlistSubmenu(kind),
+  emptyResult: (t) => emptyResult(t),
+  pauseMusic: () => player.pause(),
+  castVideo: (action, arg) => castVideo(action, arg),
+});
+window.chewVideo = video;
+
 // ---------------------------------------------------------------- boot
 
 (async function boot() {
@@ -1155,6 +1472,7 @@ $('#update-btn').addEventListener('click', () => chew.updates.install());
   player.ffmpeg = S.info.ffmpeg;
   hydrateIcons();
   await loadState();
+  await seedSmartPlaylists();
   player.shuffle = !!S.settings.shuffle;
   player.repeat = S.settings.repeat || 'off';
   player.gapless = S.settings.gapless !== false;
@@ -1168,5 +1486,8 @@ $('#update-btn').addEventListener('click', () => chew.updates.install());
   syncToggles();
   renderNowPlaying();
   renderTime();
-  go('songs', null, false);
+  await video.load();
+  video.player.setVolume(S.settings.videoVolume ?? 0.8);
+  setMode(S.settings.mode === 'video' ? 'video' : 'audio', false);
+  go(S.mode === 'video' ? 'vhome' : 'songs', null, false);
 })();

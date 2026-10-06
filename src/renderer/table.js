@@ -1,4 +1,5 @@
 import { icon, hydrateIcons } from './icons.js';
+import { stars } from './util.js';
 
 export const fmtTime = (s) => {
   if (!s || !Number.isFinite(s)) return '0:00';
@@ -21,11 +22,20 @@ export const COLUMNS = {
   genre: { label: 'Genre', width: 'minmax(70px, 0.7fr)', cell: (t) => esc(t.genre), sortKey: 'genre' },
   time: { label: 'Time', width: '56px', cell: (t) => fmtTime(t.duration), sortKey: 'duration' },
   format: { label: 'Format', width: '60px', cell: (t) => esc(t.format), sortKey: 'format' },
+  rating: { label: 'Rating', width: '78px', cell: (t) => stars(t.rating), sortKey: 'rating' },
+  plays: { label: 'Plays', width: '48px', cell: (t) => t.plays || '', sortKey: 'plays' },
+  // video columns
+  vtitle: { label: 'Title', width: 'minmax(160px, 2.4fr)', cell: (t) => esc(t.type === 'episode' ? `${t.show} · S${t.season}E${String(t.episode).padStart(2, '0')} · ${t.title}` : t.title), sortKey: 'title' },
+  vyear: { label: 'Year', width: '52px', cell: (t) => t.year || '', sortKey: 'year' },
+  vgenre: { label: 'Genre', width: 'minmax(70px, 0.8fr)', cell: (t) => esc(t.genre), sortKey: 'genre' },
+  res: { label: 'Quality', width: '64px', cell: (t) => (t.height ? (t.height >= 2000 ? '4K' : t.height >= 1000 ? '1080p' : t.height >= 700 ? '720p' : `${t.height}p`) : ''), sortKey: 'height' },
+  vstate: { label: '', width: '44px', cell: (t) => (t.watched ? '<span class="watched">✓</span>' : t.inProgress && t.duration ? `<span class="pct">${Math.round((t.position / t.duration) * 100)}%</span>` : '') },
 };
 
 // Virtualised track list: only the visible rows exist in the DOM, so 50k tracks stay smooth.
 export class TrackTable {
-  constructor({ columns, tracks, sort, onSort, onPlay, onContext, onReorder, onDelete, isPlaying, dragType = 'tracks' }) {
+  constructor({ columns, tracks, sort, onSort, onPlay, onContext, onReorder, onDelete, onRate, isPlaying, dragType = 'tracks' }) {
+    this.onRate = onRate;
     this.columns = columns;
     this.tracks = tracks;
     this.sort = sort;
@@ -151,6 +161,11 @@ export class TrackTable {
       this.onSort({ key, dir });
     });
     this.body.addEventListener('mousedown', (e) => {
+      const star = e.target.closest('[data-star]');
+      if (star && this.onRate && e.button === 0) {
+        const i = this.rowIndex(e);
+        if (i >= 0) { e.preventDefault(); this.onRate(this.tracks[i].id, Number(star.dataset.star)); return; }
+      }
       const i = this.rowIndex(e);
       if (i < 0) { if (e.button === 0) { this.selected.clear(); this.refresh(); } return; }
       if (e.button === 2 && this.selected.has(this.tracks[i].id)) return;

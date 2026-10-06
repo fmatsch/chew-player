@@ -6,7 +6,9 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { Library } from './library.js';
 import { extOf, isAudioFile } from './formats.js';
-import { transcodeStream, ffmpegPath } from './ffmpeg.js';
+import { transcodeStream, ffmpegPath, videoStream, subtitleStream } from './ffmpeg.js';
+import { VideoLibrary } from './video-library.js';
+import { CastManager } from './cast/manager.js';
 import { Updater } from './updater.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -16,16 +18,24 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'chew', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
 
+// A failing stream or network call must never freeze the whole app behind an error dialog.
+process.on('uncaughtException', (err) => console.error('[chew] uncaught:', err));
+process.on('unhandledRejection', (err) => console.error('[chew] unhandled rejection:', err));
+
 // Development helpers: isolated profile and scripted screenshots (see README → Development).
 if (process.env.CHEW_USER_DATA) app.setPath('userData', path.resolve(process.env.CHEW_USER_DATA));
 
 // Audio runs through a Web Audio graph (gapless, ReplayGain, output device), so never wait for a user gesture.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+// Lets the video player switch between audio languages of a file without re-encoding.
+app.commandLine.appendSwitch('enable-blink-features', 'AudioVideoTracks');
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let win = null;
 let library = null;
+let videoLib = null;
+let cast = null;
 let updater = null;
 const pendingOpen = [];
 
@@ -43,13 +53,14 @@ function saveSessionNow() {
 }
 
 const MIME = {
-  mp3: 'audio/mpeg', mp2: 'audio/mpeg', flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+  mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', mp2: 'audio/mpeg', flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
   wav: 'audio/wav', wave: 'audio/wav', webm: 'audio/webm', m4a: 'audio/mp4', m4b: 'audio/mp4', mp4: 'audio/mp4',
-  aac: 'audio/aac', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp',
+  aac: 'audio/aac', mov: 'video/mp4', m4v: 'video/mp4', mkv: 'video/x-matroska', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp',
 };
 
 // The renderer routes audio through Web Audio, which needs CORS-clean media.
 const CORS = { 'Access-Control-Allow-Origin': '*' };
+const IMAGE_EXT = /\.(jpe?g|png|webp|gif|bmp)$/i;
 
 // Byte-range aware file response so <audio> can seek.
 async function serveFile(file, request) {
@@ -83,9 +94,26 @@ function registerProtocol() {
         const t = Number(url.searchParams.get('t')) || 0;
         return new Response(transcodeStream(track.path, t, track.sampleRate || 0), { headers: { 'Content-Type': 'audio/flac', ...CORS } });
       }
+      if (url.host === 'video' || url.host === 'vstream' || url.host === 'subs') {
+        const [id, n] = url.pathname.slice(1).split('/');
+        const item = videoLib.data.items[id];
+        if (!item) return new Response('Not found', { status: 404 });
+        const start = Number(url.searchParams.get('t')) || 0;
+        if (url.host === 'video') {
+          const res = await serveFile(item.path, request);
+          if (extOf(item.path) === 'mp4' || extOf(item.path) === 'webm') return res;
+          res.headers.set('Content-Type', extOf(item.path) === 'webm' ? 'video/webm' : 'video/mp4');
+          return res;
+        }
+        if (url.host === 'subs') {
+          return new Response(subtitleStream(item, Number(n) || 0, start), { headers: { 'Content-Type': 'text/vtt; charset=utf-8', ...CORS } });
+        }
+        const stream = videoStream(item, { start, audio: Number(url.searchParams.get('a')) || 0, mode: url.searchParams.get('mode') === 'transcode' ? 'transcode' : 'remux' });
+        return new Response(stream, { headers: { 'Content-Type': 'video/mp4', ...CORS } });
+      }
       if (url.host === 'cover') {
         const p = url.searchParams.get('p');
-        if (!library.isKnownCover(p)) return new Response('Forbidden', { status: 403 });
+        if (!library.isKnownCover(p) && !(videoLib.isKnownFile(p) && IMAGE_EXT.test(p))) return new Response('Forbidden', { status: 403 });
         const res = await serveFile(p, request);
         res.headers.set('Cache-Control', 'max-age=31536000');
         return res;
@@ -220,7 +248,7 @@ function registerIpc() {
   ipcMain.handle('settings:set', (_e, key, value) => {
     library.data.settings[key] = value;
     if (key === 'theme') nativeTheme.themeSource = value;
-    if (key === 'watchFolders') library.watch();
+    if (key === 'watchFolders') { library.watch(); videoLib.watch(); }
     if (key === 'autoUpdate') updater.schedule();
     library.save();
   });
@@ -231,22 +259,48 @@ function registerIpc() {
     sessionTimer = setTimeout(saveSessionNow, 2000);
   });
   ipcMain.handle('update:check', () => updater.check(true));
+
+  // ---- video library
+  ipcMain.handle('video:state', () => videoLib.state());
+  ipcMain.handle('video:folders:add', async () => {
+    const r = await dialog.showOpenDialog(win, { title: 'Add Video Folder', properties: ['openDirectory', 'multiSelections', 'createDirectory'] });
+    if (r.canceled) return false;
+    let added = false;
+    for (const dir of r.filePaths) added = videoLib.addFolder(dir) || added;
+    if (added) videoLib.scan();
+    return added;
+  });
+  ipcMain.handle('video:folders:remove', (_e, dir) => videoLib.removeFolder(dir));
+  ipcMain.handle('video:scan', () => { videoLib.scan(); });
+  ipcMain.handle('video:fetch', (_e, ids) => { videoLib.fetchMissing(ids || null).catch(() => {}); });
+  ipcMain.handle('video:progress', (_e, id, pos, dur) => videoLib.progress(id, pos, dur));
+  ipcMain.handle('video:watched', (_e, ids, watched) => videoLib.setWatched(ids, watched));
+  ipcMain.handle('video:edit', (_e, ids, edits) => videoLib.edit(ids, edits));
+  // ---- casting
+  ipcMain.handle('cast:devices', () => { cast.refresh(); return cast.devices(); });
+  ipcMain.handle('cast:play', (_e, opts) => cast.play(opts));
+  ipcMain.handle('cast:control', (_e, action, value) => cast.control(action, value));
+  ipcMain.handle('cast:pair-start', (_e, id) => cast.pairStart(id));
+  ipcMain.handle('cast:pair-finish', (_e, id, pin) => cast.pairFinish(id, pin));
+  ipcMain.handle('video:reveal', (_e, id) => { const it = videoLib.data.items[id]; if (it) shell.showItemInFolder(it.path); });
   ipcMain.handle('update:install', () => updater.install());
   ipcMain.handle('update:status', () => updater.status);
   ipcMain.handle('tracks:edit', (_e, ids, edits) => library.editTracks(ids, edits));
   ipcMain.handle('tracks:reveal', (_e, id) => { const t = library.data.tracks[id]; if (t) shell.showItemInFolder(t.path); });
   ipcMain.handle('folder:reveal', (_e, dir) => shell.openPath(dir));
   ipcMain.handle('open-paths', (_e, paths) => openPaths(paths));
-  ipcMain.handle('playlist:create', (_e, name, ids) => library.createPlaylist(name, ids));
+  ipcMain.handle('playlist:create', (_e, name, ids, extra) => library.createPlaylist(name, ids, extra));
+  ipcMain.handle('tracks:played', (_e, id) => library.markPlayed(id));
+  ipcMain.handle('tracks:rate', (_e, ids, rating) => library.rateTracks(ids, rating));
   ipcMain.handle('playlist:update', (_e, id, patch) => library.updatePlaylist(id, patch));
   ipcMain.handle('playlist:delete', (_e, id) => library.deletePlaylist(id));
   ipcMain.handle('playlist:import', () => importPlaylist());
-  ipcMain.handle('playlist:export', async (_e, id) => {
+  ipcMain.handle('playlist:export', async (_e, id, ids) => {
     const p = library.playlist(id);
     if (!p) return false;
     const r = await dialog.showSaveDialog(win, { title: 'Export Playlist', defaultPath: `${p.name.replace(/[\\/:*?"<>|]/g, '_')}.m3u8`, filters: [{ name: 'M3U Playlist', extensions: ['m3u8', 'm3u'] }] });
     if (r.canceled || !r.filePath) return false;
-    await library.exportM3U(id, r.filePath);
+    await library.exportM3U(id, r.filePath, ids);
     return true;
   });
   ipcMain.handle('confirm', async (_e, message, detail, okLabel) => {
@@ -286,6 +340,7 @@ async function captureAndQuit(out) {
     await fs.writeFile(shots.length > 1 ? out.replace(/\.png$/, `-${i}.png`) : out, img.toPNG());
   }
   await library.saveNow();
+  await videoLib.saveNow();
   saveSessionNow();
   app.exit(0);
 }
@@ -306,6 +361,22 @@ app.whenReady().then(() => {
   library.on('changed', () => send('library-changed'));
   library.on('scan', (p) => send('scan-progress', p));
   library.on('fetch', (p) => send('fetch-progress', p));
+  videoLib = new VideoLibrary(app.getPath('userData'), {
+    autoFetch: () => library.data.settings.autoFetch !== false,
+    watchFolders: () => library.data.settings.watchFolders !== false,
+    lang: () => (app.getLocale() || 'en').split('-')[0],
+  });
+  videoLib.on('changed', () => send('video-changed'));
+  videoLib.on('scan', (p) => send('scan-progress', { ...p, source: 'video' }));
+  videoLib.on('fetch', (p) => send('fetch-progress', { ...p, source: 'video' }));
+  cast = new CastManager({
+    dataDir: app.getPath('userData'),
+    getVideo: (id) => (videoLib.data.items[id] ? videoLib.view(videoLib.data.items[id]) : null),
+    getTrack: (id) => (library.data.tracks[id] ? library.view(library.data.tracks[id]) : null),
+  });
+  cast.on('devices', (list) => send('cast-devices', list));
+  cast.on('status', (st) => send('cast-status', st));
+  cast.start();
   loadSession();
   updater = new Updater({ send: (status) => send('update-status', status), enabled: () => library.data.settings.autoUpdate !== false });
 
@@ -323,6 +394,8 @@ app.whenReady().then(() => {
   win.webContents.once('did-finish-load', () => {
     if (library.data.settings.folders.length) library.scan();
     library.watch();
+    if (videoLib.data.folders.length) videoLib.scan();
+    videoLib.watch();
     updater.schedule();
     const argvFiles = isMac ? [] : process.argv.slice(1).filter((a) => !a.startsWith('-') && path.isAbsolute(a) && a !== app.getAppPath());
     openPaths([...pendingOpen.splice(0), ...argvFiles]);
@@ -333,4 +406,4 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { if (!isMac) app.quit(); });
-app.on('before-quit', () => { library?.saveNow(); saveSessionNow(); library?.unwatch(); });
+app.on('before-quit', () => { cast?.close(); library?.saveNow(); videoLib?.saveNow(); saveSessionNow(); library?.unwatch(); videoLib?.unwatch(); });

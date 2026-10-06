@@ -21,6 +21,11 @@ cloud, no subscription. It never moves, renames or rewrites your files.
 
 ## Features
 
+Chew Player has two sides, **Music** and **Video**. You switch between them at the top of the sidebar.
+Both work the same way: you point the app at folders, and it fills in the details from open databases.
+
+### Music
+
 - **Folder-based library**: add one or more music folders. Chew Player scans them and picks up
   changes on every rescan. You can browse by **Songs**, **Albums**, **Artists** or the actual
   **Folders** on disk.
@@ -32,6 +37,12 @@ cloud, no subscription. It never moves, renames or rewrites your files.
   open [MusicBrainz](https://musicbrainz.org) database. Album art comes from embedded pictures, from
   `cover.jpg`/`folder.jpg` in the folder, or from the [Cover Art Archive](https://coverartarchive.org).
 - **Playlists**: create, rename and reorder them by drag and drop. Import and export them as `.m3u`/`.m3u8`.
+- **Smart playlists**: rule-based lists that update themselves, such as "rated 4+ stars and not played in 3 months".
+  You can match all or any rules on title, artist, genre, year, rating, plays, last played, date added, length,
+  format and more, and limit a list to e.g. 50 songs picked at random or by most played. Chew Player starts you
+  off with *Top Rated*, *Recently Added*, *Most Played* and *Never Played*.
+- **Ratings and play counts**: click the stars in the song list. A song counts as played once you have heard half
+  of it (at most 4 minutes).
 - **Queue, shuffle and repeat**: "Play Next", "Add to Queue", repeat all or repeat one.
 - **Gapless playback**: tracks flow into each other without a pause, which matters for live and concept albums.
 - **Volume leveling**: uses the ReplayGain (and Opus R128) values stored in your files. You can choose track, album or
@@ -44,6 +55,38 @@ cloud, no subscription. It never moves, renames or rewrites your files.
 - **Edit info**: correct tags for one song or many at once. Your edits are stored in Chew Player's
   library, so the files themselves stay untouched.
 - **Flat, quiet design**: light and dark themes that follow the system, and media keys.
+
+### Video
+
+- **Movies and TV shows from your folders**: Chew Player recognises movies (`Heat (1995)/…`, `The.Matrix.1999.1080p…`)
+  and episodes (`Show S01E02`, `Show 1x02`, `Show/Season 1/02 Title`) from file and folder names. Extras and
+  sample files are skipped.
+- **Posters and descriptions**: TV shows come from [TVMaze](https://www.tvmaze.com), including episode titles,
+  summaries and stills. Movies come from [Wikidata](https://www.wikidata.org) and Wikipedia, with poster,
+  year, genre, director and a plot summary in your system language. Local `poster.jpg`/`folder.jpg` files are used
+  first. None of this needs an account or API key.
+- **Plays almost anything**: MP4/MOV/WebM play natively. MKV and other containers are re-wrapped on the fly.
+  AVI, WMV, MPEG-2, DivX and other old formats are converted to H.264 live with FFmpeg, and seeking still works.
+- **Subtitles and audio tracks**: embedded text subtitles and `.srt`/`.vtt`/`.ass` files next to the video,
+  plus switching between audio languages.
+- **Remembers where you stopped**: the Home screen shows *Continue Watching*, *Up Next* (the next episode of
+  shows you are watching) and *Recently Added*. Videos count as watched at 92 %.
+- **Standard player controls**: ±10 s skip, playback speed, Picture in Picture, full screen, next episode,
+  and keyboard shortcuts (Space, ←/→, ↑/↓, F, M, C, Shift+N, Esc).
+- **Video playlists and smart playlists**, e.g. "unwatched movies in 4K added this month".
+
+### Play on your TV
+
+The cast button (in the video player and in the music player bar) sends the current video or song to a TV
+on your network. Chew Player streams it from your computer and converts it on the fly if the TV can't play the
+format. Subtitles are burned into the picture.
+
+| TV / device | How |
+| --- | --- |
+| **Apple TV** | AirPlay. The first time, the Apple TV shows a 4-digit code you enter once. |
+| **Android TV / Google TV / Chromecast** | Google Cast, on any TV with "Chromecast built-in" (Sony, Philips, TCL, Nvidia Shield, …). |
+| **Amazon Fire TV Stick** | Fire TV has no built-in receiver for computers. Install a free receiver app such as **AirScreen** (AirPlay/Cast/DLNA) or **Kodi** (enable *Settings → Services → UPnP/DLNA → Allow remote control*), and the Fire TV shows up as a DLNA or AirPlay target. |
+| **Smart TVs** (Samsung, LG, Panasonic, …) | DLNA/UPnP. |
 
 ## Download
 
@@ -98,7 +141,9 @@ Project layout:
 src/main/main.js      window, menus, IPC and the chew:// media protocol (byte ranges + FFmpeg streaming)
 src/main/library.js   folder scanning, tag reading (music-metadata), playlists, JSON persistence
 src/main/online.js    MusicBrainz + Cover Art Archive lookups (rate-limited to 1 req/s)
-src/main/ffmpeg.js    FFmpeg discovery and on-the-fly decoding for exotic formats
+src/main/ffmpeg.js    FFmpeg discovery and on-the-fly decoding/remuxing for audio, video and subtitles
+src/main/video-*.js   video library: scanning, file-name parsing, TVMaze/Wikidata lookups
+src/main/cast/        casting: LAN media server (HLS/MPEG-TS), discovery, AirPlay (HAP pairing), Google Cast, DLNA
 src/main/updater.js   update checks (electron-updater on Windows, GitHub release check on macOS)
 src/renderer/         the UI: views, virtualised track table, Web Audio player engine (gapless, ReplayGain)
 docs/                 the GitHub Pages website

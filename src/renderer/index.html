@@ -13,13 +13,26 @@
         <img src="logo.svg" alt="" width="26" height="26">
         <span>Chew Player</span>
       </div>
+      <div class="mode-switch" id="mode-switch" role="tablist" aria-label="Library">
+        <button data-mode="audio" class="on"><i data-icon="note"></i>Music</button>
+        <button data-mode="video"><i data-icon="film"></i>Video</button>
+      </div>
       <nav class="nav" id="nav">
-        <div class="nav-section">Library</div>
-        <button class="nav-item" data-view="songs"><i data-icon="note"></i><span>Songs</span></button>
-        <button class="nav-item" data-view="albums"><i data-icon="album"></i><span>Albums</span></button>
-        <button class="nav-item" data-view="artists"><i data-icon="mic"></i><span>Artists</span></button>
-        <button class="nav-item" data-view="folders"><i data-icon="folder"></i><span>Folders</span></button>
-        <button class="nav-item" data-view="queue"><i data-icon="queue"></i><span>Queue</span></button>
+        <div class="nav-group" data-for="audio">
+          <div class="nav-section">Library</div>
+          <button class="nav-item" data-view="songs"><i data-icon="note"></i><span>Songs</span></button>
+          <button class="nav-item" data-view="albums"><i data-icon="album"></i><span>Albums</span></button>
+          <button class="nav-item" data-view="artists"><i data-icon="mic"></i><span>Artists</span></button>
+          <button class="nav-item" data-view="folders"><i data-icon="folder"></i><span>Folders</span></button>
+          <button class="nav-item" data-view="queue"><i data-icon="queue"></i><span>Queue</span></button>
+        </div>
+        <div class="nav-group" data-for="video">
+          <div class="nav-section">Library</div>
+          <button class="nav-item" data-view="vhome"><i data-icon="home"></i><span>Home</span></button>
+          <button class="nav-item" data-view="movies"><i data-icon="film"></i><span>Movies</span></button>
+          <button class="nav-item" data-view="shows"><i data-icon="tv"></i><span>TV Shows</span></button>
+          <button class="nav-item" data-view="vfolders"><i data-icon="folder"></i><span>Folders</span></button>
+        </div>
         <div class="nav-section">
           Playlists
           <button class="icon-btn small" id="new-playlist" title="New playlist"><i data-icon="plus"></i></button>
@@ -84,12 +97,15 @@
       </div>
       <div class="volume">
         <span class="tech" id="now-tech"></span>
+        <button class="icon-btn" id="btn-cast" title="Play on TV (AirPlay, Google Cast, DLNA)"><i data-icon="cast"></i></button>
         <button class="icon-btn" id="btn-output" title="Output device"><i data-icon="output"></i></button>
         <button class="icon-btn" id="btn-mute" title="Mute"><i data-icon="volume"></i></button>
         <input type="range" id="volume" min="0" max="100" value="80">
       </div>
     </footer>
   </div>
+
+  <div class="vstage" id="vstage" hidden></div>
 
   <div class="drop-overlay" id="drop-overlay" hidden>
     <div><i data-icon="folder"></i>Drop folders to add them to your library,<br>or audio files to play them.</div>

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chew Player</title>
-  <meta name="description" content="A simple, folder-based music player for macOS and Windows. Plays almost any format, fills in missing tags and album art from MusicBrainz, and keeps your files untouched.">
+  <meta name="description" content="A simple, folder-based music and video player for macOS and Windows. Casts to Apple TV, Android TV and Fire TV. Plays almost any format, fills in missing tags and album art from MusicBrainz, and keeps your files untouched.">
   <meta property="og:title" content="Chew Player">
   <meta property="og:description" content="A simple, folder-based music player for macOS and Windows.">
   <meta property="og:image" content="https://fmatsch.github.io/chew-player/screenshots/albums-dark.png">
@@ -96,6 +96,14 @@
     :root[data-theme="dark"] .steps li::before { background: var(--accent); }
     @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .steps li::before { background: var(--accent); } }
 
+    .ticks { list-style: none; padding: 0; margin: 0; }
+    .ticks li { position: relative; padding: 0 0 14px 30px; color: var(--muted); }
+    .ticks li::before { content: "✓"; position: absolute; left: 0; top: 0; color: var(--accent); font-weight: 900; }
+    .ticks li b { color: var(--text); }
+    .cast-card { background: var(--soft); border-radius: 14px; padding: 28px; }
+    .cast-card h3 { margin: 8px 0 16px; font-size: 22px; letter-spacing: -0.02em; }
+    .cast-row { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 15px; }
+    .cast-row span { color: var(--muted); text-align: right; }
     .download { text-align: center; }
     .dl-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; max-width: 880px; margin: 40px auto 0; }
     .dl { background: var(--soft); border-radius: 14px; padding: 28px 20px; text-decoration: none; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 2px solid transparent; }
@@ -125,6 +133,7 @@
       <a class="brand" href="#"><img src="logo.svg" alt="">Chew Player</a>
       <nav class="links">
         <a class="hide-sm" href="#features">Features</a>
+        <a class="hide-sm" href="#video">Video</a>
         <a class="hide-sm" href="#formats">Formats</a>
         <a href="https://github.com/fmatsch/chew-player">GitHub</a>
         <a class="btn primary" style="height:38px;padding:0 16px;font-size:14px" href="#download">Download</a>
@@ -137,7 +146,7 @@
       <div class="wrap">
         <img class="mark" src="logo.svg" alt="Chew Player logo">
         <h1>Your folders.<br>Your music. <span>Just play.</span></h1>
-        <p class="lead">Chew Player is a simple, folder-based music player for macOS and Windows. Point it at your music, and it plays almost any format and fills in missing details from open music databases.</p>
+        <p class="lead">Chew Player is a simple, folder-based music and video player for macOS and Windows. Point it at your folders, and it plays almost any format, fills in missing details from open databases and sends videos to your TV.</p>
         <div class="cta">
           <a class="btn primary" id="hero-dl" href="#download">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></svg>
@@ -184,7 +193,7 @@
           <div class="card">
             <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h11M4 11h11M4 16h6M17 8v9.5"/><circle cx="15" cy="17.5" r="2.5" fill="currentColor"/></svg></div>
             <h3>Playlists, simply</h3>
-            <p>Drag songs onto a playlist and reorder them by dragging. Import and export standard M3U files, so your playlists also work in other players.</p>
+            <p>Drag songs onto a playlist and reorder them. Smart playlists fill themselves from rules like “4+ stars, not played in 3 months”. M3U import and export are included.</p>
           </div>
           <div class="card">
             <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg></div>
@@ -195,6 +204,33 @@
             <div class="ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg></div>
             <h3>Fast &amp; friendly</h3>
             <p>Smooth with tens of thousands of songs. Includes gapless playback, ReplayGain volume leveling, output device selection, media keys and light &amp; dark themes. It also remembers where you left off.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="video">
+      <div class="wrap split">
+        <div>
+          <div class="kicker">Video</div>
+          <h2>Your movies and shows.<br>Same simple idea.</h2>
+          <p class="intro" style="margin-bottom:24px">One switch at the top turns Chew Player into a video player. It recognises movies and TV episodes from their file names and fetches posters, episode titles and plot summaries from Wikipedia and TVMaze.</p>
+          <ul class="ticks">
+            <li><b>Continue watching</b> where you stopped, and the next episode is lined up</li>
+            <li><b>MKV, AVI, WMV, MPEG-2 …</b> are converted on the fly, and seeking still works</li>
+            <li><b>Subtitles and audio tracks</b>, embedded or as .srt files next to the video</li>
+            <li><b>Picture in Picture</b>, playback speed, full screen and keyboard shortcuts</li>
+          </ul>
+        </div>
+        <div>
+          <div class="cast-card">
+            <div class="kicker">Play on your TV</div>
+            <h3>Send it to the big screen</h3>
+            <div class="cast-row"><b>Apple TV</b><span>AirPlay</span></div>
+            <div class="cast-row"><b>Android TV · Google TV · Chromecast</b><span>Google Cast</span></div>
+            <div class="cast-row"><b>Fire TV Stick</b><span>with a free receiver app (AirScreen, Kodi)</span></div>
+            <div class="cast-row"><b>Samsung, LG &amp; other smart TVs</b><span>DLNA</span></div>
+            <p class="fine" style="text-align:left;margin:14px 0 0">Formats the TV can’t play are converted on the fly, and subtitles come along burned into the picture.</p>
           </div>
         </div>
       </div>

@@ -340,7 +340,7 @@ export class Library extends EventEmitter {
           const old = this.data.tracks[id];
           if (!old || old.mtime !== stat.mtimeMs || old.size !== stat.size) {
             const t = await this.readTrack(file, root, stat);
-            if (old) Object.assign(t, { online: old.online, edits: old.edits, added: old.added, lookedUp: old.lookedUp });
+            if (old) Object.assign(t, { online: old.online, edits: old.edits, added: old.added, lookedUp: old.lookedUp, plays: old.plays, lastPlayed: old.lastPlayed, rating: old.rating });
             this.data.tracks[id] = t;
             this.changed();
           } else if (!old.cover || !old.cover.startsWith(this.coverDir)) {
@@ -476,12 +476,32 @@ export class Library extends EventEmitter {
     this.changed();
   }
 
+  // ---------- listening stats ----------
+
+  markPlayed(id) {
+    const t = this.data.tracks[id];
+    if (!t) return;
+    t.plays = (t.plays || 0) + 1;
+    t.lastPlayed = Date.now();
+    this.lastChange = 0;
+    this.changed();
+  }
+
+  rateTracks(ids, rating) {
+    const r = Math.max(0, Math.min(5, Math.round(rating) || 0));
+    for (const id of ids) { const t = this.data.tracks[id]; if (t) t.rating = r || null; }
+    this.lastChange = 0;
+    this.changed();
+  }
+
   // ---------- playlists ----------
+  // { id, name, kind: 'audio' | 'video', trackIds, smart?: { match, rules, limit } }
+  // Smart playlists are evaluated live in the UI from their rules.
 
   playlist(id) { return this.data.playlists.find((p) => p.id === id); }
 
-  createPlaylist(name, trackIds = []) {
-    const p = { id: randomUUID(), name: name || 'New Playlist', trackIds: [...trackIds], created: Date.now() };
+  createPlaylist(name, trackIds = [], extra = {}) {
+    const p = { id: randomUUID(), name: name || 'New Playlist', kind: extra.kind || 'audio', trackIds: [...trackIds], created: Date.now(), ...(extra.smart ? { smart: extra.smart } : {}) };
     this.data.playlists.push(p);
     this.lastChange = 0;
     this.changed();
@@ -494,6 +514,7 @@ export class Library extends EventEmitter {
     if (typeof patch.name === 'string') p.name = patch.name.trim() || p.name;
     if (Array.isArray(patch.trackIds)) p.trackIds = patch.trackIds;
     if (Array.isArray(patch.add)) p.trackIds.push(...patch.add);
+    if (patch.smart) p.smart = patch.smart;
     this.lastChange = 0;
     this.changed();
   }
@@ -504,10 +525,10 @@ export class Library extends EventEmitter {
     this.changed();
   }
 
-  async exportM3U(id, file) {
+  async exportM3U(id, file, ids = null) {
     const p = this.playlist(id);
     const lines = ['#EXTM3U', `#PLAYLIST:${p.name}`];
-    for (const tid of p.trackIds) {
+    for (const tid of ids || p.trackIds) {
       const t = this.data.tracks[tid];
       if (!t) continue;
       const v = this.view(t);
