@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chew Player</title>
+  <meta name="description" content="A simple, folder-based music player for macOS and Windows. Plays almost any format, fills in missing tags and album art from MusicBrainz, and keeps your files untouched.">
+  <meta property="og:title" content="Chew Player">
+  <meta property="og:description" content="A simple, folder-based music player for macOS and Windows.">
+  <meta property="og:image" content="https://fmatsch.github.io/chew-player/screenshots/albums-dark.png">
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <style>
+    :root {
+      --accent: #ff4f7b;
+      --accent-strong: #e23a66;
+      --ink: #1b1f2a;
+      --bg: #ffffff;
+      --soft: #f4f5f8;
+      --line: #e4e6ec;
+      --text: #1b1f2a;
+      --muted: #5f6678;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #14171f; --soft: #1b1f2a; --line: #2a3040; --text: #e8eaf0; --muted: #949bb0; color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] { --bg: #14171f; --soft: #1b1f2a; --line: #2a3040; --text: #e8eaf0; --muted: #949bb0; color-scheme: dark; }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; font: 17px/1.6 var(--font); color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
+    a { color: inherit; }
+    img { max-width: 100%; display: block; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+    header.top { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); }
+    header.top .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; text-decoration: none; letter-spacing: -0.01em; }
+    .brand img { width: 30px; height: 30px; }
+    nav.links { display: flex; gap: 24px; align-items: center; font-size: 15px; font-weight: 600; }
+    nav.links a { text-decoration: none; color: var(--muted); }
+    nav.links a:hover { color: var(--text); }
+
+    .btn { display: inline-flex; align-items: center; gap: 10px; height: 48px; padding: 0 22px; border-radius: 10px; font-weight: 700; font-size: 16px; text-decoration: none; border: 0; cursor: pointer; font-family: inherit; }
+    .btn.primary { background: var(--accent); color: #fff; }
+    .btn.primary:hover { background: var(--accent-strong); }
+    .btn.secondary { background: var(--soft); color: var(--text); }
+    .btn.secondary:hover { background: var(--line); }
+    .btn small { font-weight: 500; opacity: 0.8; font-size: 13px; }
+    .btn svg { width: 18px; height: 18px; flex: none; }
+
+    .hero { padding: 88px 0 56px; text-align: center; }
+    .hero img.mark { width: 120px; height: 120px; margin: 0 auto 28px; }
+    .hero h1 { font-size: clamp(40px, 7vw, 72px); line-height: 1.02; letter-spacing: -0.04em; margin: 0 0 20px; }
+    .hero h1 span { color: var(--accent); }
+    .hero p.lead { font-size: clamp(18px, 2.4vw, 22px); color: var(--muted); max-width: 640px; margin: 0 auto 36px; }
+    .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .fine { margin-top: 16px; font-size: 14px; color: var(--muted); }
+
+    .shot { padding: 24px 0 96px; }
+    .shot figure { margin: 0; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: var(--soft); }
+    .toggle { display: inline-flex; background: var(--soft); border-radius: 10px; padding: 4px; margin: 0 auto 20px; }
+    .toggle button { border: 0; background: none; font: inherit; font-size: 14px; font-weight: 600; padding: 6px 16px; border-radius: 7px; color: var(--muted); cursor: pointer; }
+    .toggle button.on { background: var(--accent); color: #fff; }
+    .center { text-align: center; }
+
+    section.band { padding: 96px 0; border-top: 1px solid var(--line); }
+    .kicker { color: var(--accent); font-weight: 800; font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; }
+    h2 { font-size: clamp(30px, 4.4vw, 44px); line-height: 1.1; letter-spacing: -0.03em; margin: 10px 0 16px; }
+    .intro { color: var(--muted); max-width: 640px; font-size: 19px; margin: 0 0 48px; }
+
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .card { background: var(--soft); border-radius: 14px; padding: 28px; }
+    .card .ico { width: 44px; height: 44px; border-radius: 10px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
+    .card .ico svg { width: 22px; height: 22px; }
+    .card h3 { margin: 0 0 8px; font-size: 19px; letter-spacing: -0.01em; }
+    .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+
+    .formats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .formats span { font-size: 13px; font-weight: 700; letter-spacing: 0.04em; padding: 6px 12px; border-radius: 8px; background: var(--soft); }
+    .formats span.native { background: var(--accent); color: #fff; }
+    .legend { font-size: 14px; color: var(--muted); margin-top: 16px; display: flex; gap: 20px; flex-wrap: wrap; }
+    .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; background: var(--soft); border: 1px solid var(--line); }
+    .legend i.native { background: var(--accent); border: 0; }
+
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+    .split figure { margin: 0; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+    .steps { counter-reset: s; list-style: none; padding: 0; margin: 0; }
+    .steps li { counter-increment: s; position: relative; padding: 0 0 22px 52px; color: var(--muted); }
+    .steps li b { color: var(--text); display: block; font-size: 18px; }
+    .steps li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 36px; height: 36px; border-radius: 50%; background: var(--ink); color: #fff; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+    :root[data-theme="dark"] .steps li::before { background: var(--accent); }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .steps li::before { background: var(--accent); } }
+
+    .download { text-align: center; }
+    .dl-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; max-width: 880px; margin: 40px auto 0; }
+    .dl { background: var(--soft); border-radius: 14px; padding: 28px 20px; text-decoration: none; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 2px solid transparent; }
+    .dl:hover { border-color: var(--accent); }
+    .dl.suggested { border-color: var(--accent); }
+    .dl svg { width: 36px; height: 36px; margin-bottom: 8px; }
+    .dl b { font-size: 18px; }
+    .dl span { font-size: 14px; color: var(--muted); }
+    .note { max-width: 700px; margin: 32px auto 0; font-size: 14.5px; color: var(--muted); text-align: left; background: var(--soft); border-radius: 12px; padding: 18px 22px; }
+    .note code { font-size: 13px; background: var(--bg); padding: 2px 6px; border-radius: 5px; }
+
+    footer { border-top: 1px solid var(--line); padding: 40px 0; color: var(--muted); font-size: 14px; }
+    footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+    @media (max-width: 860px) {
+      .grid, .dl-grid { grid-template-columns: 1fr; }
+      .split { grid-template-columns: 1fr; gap: 32px; }
+      nav.links a.hide-sm { display: none; }
+      .hero { padding-top: 56px; }
+      section.band { padding: 64px 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="#"><img src="logo.svg" alt="">Chew Player</a>
+      <nav class="links">
+        <a class="hide-sm" href="#features">Features</a>
+        <a class="hide-sm" href="#formats">Formats</a>
+        <a href="https://github.com/fmatsch/chew-player">GitHub</a>
+        <a class="btn primary" style="height:38px;padding:0 16px;font-size:14px" href="#download">Download</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap">
+        <img class="mark" src="logo.svg" alt="Chew Player logo">
+        <h1>Your folders.<br>Your music. <span>Just play.</span></h1>
+        <p class="lead">Chew Player is a simple, folder-based music player for macOS and Windows. Point it at your music, and it plays almost any format and fills in missing details from open music databases.</p>
+        <div class="cta">
+          <a class="btn primary" id="hero-dl" href="#download">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></svg>
+            <span id="hero-dl-label">Download for free</span>
+          </a>
+          <a class="btn secondary" href="https://github.com/fmatsch/chew-player">View on GitHub</a>
+        </div>
+        <p class="fine">Free &amp; open source · MIT licensed · No account, no cloud, no tracking</p>
+      </div>
+    </section>
+
+    <section class="shot">
+      <div class="wrap center">
+        <div class="toggle" role="tablist" aria-label="Screenshot theme">
+          <button class="on" data-shot="albums-dark">Dark</button>
+          <button data-shot="albums-light">Light</button>
+          <button data-shot="songs-light">Songs</button>
+        </div>
+        <figure><img id="shot" src="screenshots/albums-dark.png" width="1600" height="1006" alt="Chew Player showing an album grid with cover art"></figure>
+      </div>
+    </section>
+
+    <section class="band" id="features">
+      <div class="wrap">
+        <div class="kicker">Features</div>
+        <h2>Everything a music player needs.<br>Nothing it doesn't.</h2>
+        <p class="intro">Remember when a music player just played your music? Chew Player brings that back with a clean, flat look.</p>
+        <div class="grid">
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg></div>
+            <h3>Folders first</h3>
+            <p>Add your music folders and Chew Player scans them. You can browse the real folder tree or use Songs, Albums and Artists. Drop a folder on the window to add it.</p>
+          </div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.7 5.5 3.7 9s-1.2 6.5-3.7 9c-2.5-2.5-3.7-5.5-3.7-9S9.5 5.5 12 3z"/></svg></div>
+            <h3>Fills the gaps</h3>
+            <p>Missing artist, album, year or cover? Chew Player reads your folder names, then looks the song up in MusicBrainz and the Cover Art Archive.</p>
+          </div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3" fill="currentColor"/><circle cx="17" cy="16" r="3" fill="currentColor"/></svg></div>
+            <h3>Plays (almost) anything</h3>
+            <p>Common formats play natively. Lossless and exotic files like ALAC, APE, WavPack, WMA and DSD are decoded on the fly by the bundled FFmpeg.</p>
+          </div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h11M4 11h11M4 16h6M17 8v9.5"/><circle cx="15" cy="17.5" r="2.5" fill="currentColor"/></svg></div>
+            <h3>Playlists, simply</h3>
+            <p>Drag songs onto a playlist and reorder them by dragging. Import and export standard M3U files, so your playlists also work in other players.</p>
+          </div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg></div>
+            <h3>Hands off your files</h3>
+            <p>Chew Player never moves, renames or rewrites your files. Your tag edits and playlists live in its own small library.</p>
+          </div>
+          <div class="card">
+            <div class="ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg></div>
+            <h3>Fast &amp; friendly</h3>
+            <p>Smooth with tens of thousands of songs. Includes queue, shuffle, repeat, media keys, keyboard shortcuts and light &amp; dark themes.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="formats">
+      <div class="wrap split">
+        <div>
+          <div class="kicker">Format-agnostic</div>
+          <h2>If it's audio, it plays.</h2>
+          <p class="intro" style="margin-bottom:24px">Chew Player doesn't care where your music came from, whether that's a ripped CD, a hi-res download or an old WMA collection.</p>
+          <div class="formats">
+            <span class="native">MP3</span><span class="native">AAC</span><span class="native">M4A</span><span class="native">FLAC</span><span class="native">OGG</span><span class="native">OPUS</span><span class="native">WAV</span>
+            <span>ALAC</span><span>AIFF</span><span>WMA</span><span>APE</span><span>WAVPACK</span><span>MUSEPACK</span><span>DSF</span><span>DFF</span><span>TTA</span><span>AC3</span><span>MKA</span><span>CAF</span><span>MOD/XM</span>
+          </div>
+          <div class="legend"><span><i class="native"></i>Native playback</span><span><i></i>Decoded with bundled FFmpeg</span></div>
+        </div>
+        <div>
+          <ol class="steps">
+            <li><b>Add a folder</b>Pick the folder where your music lives, or just drag it onto the window.</li>
+            <li><b>Let it chew</b>Chew Player reads the tags, finds cover images and guesses what's missing from your folder layout.</li>
+            <li><b>Look it up</b>Anything still unknown is matched against MusicBrainz, and album art comes from the Cover Art Archive.</li>
+            <li><b>Press play</b>Double-click a song, build a playlist or hit shuffle.</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section class="band download" id="download">
+      <div class="wrap">
+        <div class="kicker">Download</div>
+        <h2>Get Chew Player</h2>
+        <p class="intro" style="margin:0 auto">Free, open source and small. Pick your platform:</p>
+        <div class="dl-grid">
+          <a class="dl" data-os="mac-arm64" href="https://github.com/fmatsch/chew-player/releases/latest/download/Chew-Player-mac-arm64.dmg">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8C7 7.4 5.6 8.3 4.8 9.7c-1.7 2.9-.4 7.2 1.2 9.5.8 1.1 1.7 2.4 2.9 2.4 1.2 0 1.6-.8 3-.8s1.8.8 3 .7c1.3 0 2.1-1.1 2.8-2.3.9-1.3 1.3-2.6 1.3-2.6s-2.6-1-2.6-4zM14.1 5.8c.6-.8 1.1-1.8 1-2.8-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.7-1 2.7 1 .1 2-.5 2.7-1.3z"/></svg>
+            <b>macOS</b><span>Apple Silicon (M1 and newer)</span>
+          </a>
+          <a class="dl" data-os="mac-x64" href="https://github.com/fmatsch/chew-player/releases/latest/download/Chew-Player-mac-x64.dmg">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8C7 7.4 5.6 8.3 4.8 9.7c-1.7 2.9-.4 7.2 1.2 9.5.8 1.1 1.7 2.4 2.9 2.4 1.2 0 1.6-.8 3-.8s1.8.8 3 .7c1.3 0 2.1-1.1 2.8-2.3.9-1.3 1.3-2.6 1.3-2.6s-2.6-1-2.6-4zM14.1 5.8c.6-.8 1.1-1.8 1-2.8-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.7-1 2.7 1 .1 2-.5 2.7-1.3z"/></svg>
+            <b>macOS</b><span>Intel</span>
+          </a>
+          <a class="dl" data-os="win" href="https://github.com/fmatsch/chew-player/releases/latest/download/Chew-Player-win-x64.exe">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5l7.5-1v7H3zM11.5 4.4L21 3v8.5h-9.5zM3 12.5h7.5v7L3 18.5zM11.5 12.5H21V21l-9.5-1.4z"/></svg>
+            <b>Windows</b><span>Windows 10 &amp; 11, 64-bit</span>
+          </a>
+        </div>
+        <div class="note">
+          <b>First launch:</b> Chew Player isn't notarised by Apple or signed with a paid Windows certificate yet.
+          On <b>macOS</b>, right-click the app and choose <i>Open</i>. If it says the app is damaged, run
+          <code>xattr -cr "/Applications/Chew Player.app"</code> in Terminal. On <b>Windows</b>, click
+          <i>More info → Run anyway</i> in the SmartScreen dialog.
+          All releases are listed on <a href="https://github.com/fmatsch/chew-player/releases">GitHub Releases</a>.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>© 2026 Chew Player · MIT License</span>
+      <span>Metadata by <a href="https://musicbrainz.org">MusicBrainz</a> · Cover art by <a href="https://coverartarchive.org">Cover Art Archive</a> · Audio decoding by <a href="https://ffmpeg.org">FFmpeg</a></span>
+    </div>
+  </footer>
+
+  <script>
+    // Screenshot switcher
+    document.querySelectorAll('[data-shot]').forEach((b) => b.addEventListener('click', () => {
+      document.querySelectorAll('[data-shot]').forEach((x) => x.classList.toggle('on', x === b));
+      document.getElementById('shot').src = `screenshots/${b.dataset.shot}.png`;
+    }));
+
+    // Suggest the right download for this visitor.
+    (async () => {
+      const ua = navigator.userAgent;
+      let os = null;
+      if (/Windows/i.test(ua)) os = 'win';
+      else if (/Macintosh|Mac OS X/i.test(ua)) {
+        os = 'mac-arm64';
+        try {
+          const h = await navigator.userAgentData?.getHighEntropyValues(['architecture']);
+          if (h?.architecture === 'x86') os = 'mac-x64';
+        } catch (e) { /* keep Apple Silicon default */ }
+      }
+      if (!os) return;
+      const card = document.querySelector(`.dl[data-os="${os}"]`);
+      if (!card) return;
+      card.classList.add('suggested');
+      const hero = document.getElementById('hero-dl');
+      hero.href = card.href;
+      document.getElementById('hero-dl-label').innerHTML = `Download for ${os === 'win' ? 'Windows' : 'macOS'} <small>${os === 'mac-x64' ? 'Intel' : os === 'mac-arm64' ? 'Apple Silicon' : '64-bit'}</small>`;
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' chew: data:; media-src chew:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Chew Player</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand drag">
+        <img src="logo.svg" alt="" width="26" height="26">
+        <span>Chew Player</span>
+      </div>
+      <nav class="nav" id="nav">
+        <div class="nav-section">Library</div>
+        <button class="nav-item" data-view="songs"><i data-icon="note"></i><span>Songs</span></button>
+        <button class="nav-item" data-view="albums"><i data-icon="album"></i><span>Albums</span></button>
+        <button class="nav-item" data-view="artists"><i data-icon="mic"></i><span>Artists</span></button>
+        <button class="nav-item" data-view="folders"><i data-icon="folder"></i><span>Folders</span></button>
+        <button class="nav-item" data-view="queue"><i data-icon="queue"></i><span>Queue</span></button>
+        <div class="nav-section">
+          Playlists
+          <button class="icon-btn small" id="new-playlist" title="New playlist"><i data-icon="plus"></i></button>
+        </div>
+        <div id="playlists"></div>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="status" id="status" hidden>
+          <div class="status-text"><span id="status-label"></span><button class="link" id="status-cancel" hidden>Stop</button></div>
+          <div class="progress"><div id="status-bar"></div></div>
+        </div>
+        <button class="nav-item" data-view="settings"><i data-icon="gear"></i><span>Settings</span></button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="toolbar drag">
+        <div class="toolbar-title">
+          <button class="icon-btn" id="back" title="Back" hidden><i data-icon="back"></i></button>
+          <div>
+            <h1 id="view-title">Songs</h1>
+            <div class="subtitle" id="view-subtitle"></div>
+          </div>
+        </div>
+        <div class="toolbar-actions">
+          <button class="btn ghost" id="play-all"><i data-icon="play"></i>Play</button>
+          <button class="btn ghost" id="shuffle-all"><i data-icon="shuffle"></i>Shuffle</button>
+          <label class="search">
+            <i data-icon="search"></i>
+            <input id="search" type="search" placeholder="Search" spellcheck="false">
+          </label>
+        </div>
+      </header>
+      <section class="content" id="content"></section>
+    </main>
+
+    <footer class="player">
+      <div class="now">
+        <div class="now-cover" id="now-cover"></div>
+        <div class="now-text">
+          <div class="now-title" id="now-title">Nothing playing</div>
+          <div class="now-artist" id="now-artist">Pick a song and press play</div>
+        </div>
+      </div>
+      <div class="transport">
+        <div class="buttons">
+          <button class="icon-btn toggle" id="btn-shuffle" title="Shuffle"><i data-icon="shuffle"></i></button>
+          <button class="icon-btn" id="btn-prev" title="Previous"><i data-icon="prev"></i></button>
+          <button class="play-btn" id="btn-play" title="Play"><i data-icon="play"></i></button>
+          <button class="icon-btn" id="btn-next" title="Next"><i data-icon="next"></i></button>
+          <button class="icon-btn toggle" id="btn-repeat" title="Repeat"><i data-icon="repeat"></i></button>
+        </div>
+        <div class="seek">
+          <span id="time-cur">0:00</span>
+          <input type="range" id="seek" min="0" max="1000" value="0" step="1">
+          <span id="time-dur">0:00</span>
+        </div>
+      </div>
+      <div class="volume">
+        <span class="tech" id="now-tech"></span>
+        <button class="icon-btn" id="btn-mute" title="Mute"><i data-icon="volume"></i></button>
+        <input type="range" id="volume" min="0" max="100" value="80">
+      </div>
+    </footer>
+  </div>
+
+  <div class="drop-overlay" id="drop-overlay" hidden>
+    <div><i data-icon="folder"></i>Drop folders to add them to your library,<br>or audio files to play them.</div>
+  </div>
+  <div class="modal-backdrop" id="modal" hidden></div>
+  <div class="toasts" id="toasts"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

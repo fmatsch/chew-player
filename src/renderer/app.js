@@ -1,0 +1,1020 @@
+import { icon, hydrateIcons, setIcon, noteMask } from './icons.js';
+import { Player } from './player.js';
+import { TrackTable, fmtTime } from './table.js';
+
+const chew = window.chew;
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+const coverUrl = (p) => `chew://cover/?p=${encodeURIComponent(p).replace(/'/g, '%27')}`;
+const coverDiv = (p, cls = '') => `<div class="cover ${p ? '' : 'empty'} ${cls}"${p ? ` style="background-image:url('${coverUrl(p)}')"` : ''}></div>`;
+const sortName = (s) => (s || '').replace(/^the\s+/i, '');
+
+const S = {
+  tracks: [],
+  byId: new Map(),
+  playlists: [],
+  settings: {},
+  info: { platform: 'darwin', ffmpeg: false },
+  albums: [],
+  albumByKey: new Map(),
+  artists: [],
+  view: 'songs',
+  param: null,
+  history: [],
+  search: '',
+  sort: { key: 'artist', dir: 1 },
+  current: null,
+  table: null,
+};
+
+const player = new Player({ getTrack: (id) => S.byId.get(id), ffmpeg: false });
+
+// ---------------------------------------------------------------- data
+
+function buildIndex() {
+  S.byId = new Map(S.tracks.map((t) => [t.id, t]));
+  for (const t of S.tracks) {
+    t._s = [t.title, t.artist, t.album, t.albumArtist, t.genre, t.year, t.format].filter(Boolean).join(' ').toLowerCase();
+  }
+  const sep = S.info.platform === 'win32' ? '\\' : '/';
+  const albums = new Map();
+  for (const t of S.tracks) {
+    let folder = t.folder || '';
+    const base = folder.slice(folder.lastIndexOf(sep) + 1);
+    if (/^(cd|disc|disk)\s*\d+$/i.test(base)) folder = folder.slice(0, folder.lastIndexOf(sep));
+    const title = t.album || 'Unknown Album';
+    // Folder-based grouping: an album is one title inside one folder (CD1/CD2 subfolders merged).
+    const key = `${title.toLowerCase()}|${folder}`;
+    let a = albums.get(key);
+    if (!a) albums.set(key, (a = { key, title, albumArtist: null, artists: new Set(), year: null, cover: null, tracks: [] }));
+    a.tracks.push(t);
+    if (t.artist) a.artists.add(t.artist);
+    if (t.albumArtist && !a.albumArtist) a.albumArtist = t.albumArtist;
+    if (t.year && (!a.year || t.year < a.year)) a.year = t.year;
+    if (!a.cover && t.cover) a.cover = t.cover;
+    t._album = key;
+  }
+  for (const a of albums.values()) {
+    a.artist = a.albumArtist || (a.artists.size === 1 ? [...a.artists][0] : a.artists.size ? 'Various Artists' : 'Unknown Artist');
+    a.tracks.sort(byDiscTrack);
+    a.duration = a.tracks.reduce((s, t) => s + (t.duration || 0), 0);
+  }
+  S.albums = [...albums.values()].sort((a, b) => collator.compare(sortName(a.artist), sortName(b.artist)) || (a.year || 0) - (b.year || 0) || collator.compare(a.title, b.title));
+  S.albumByKey = albums;
+
+  const artists = new Map();
+  for (const t of S.tracks) {
+    const name = t.albumArtist || t.artist || 'Unknown Artist';
+    if (!artists.has(name.toLowerCase())) artists.set(name.toLowerCase(), { name, tracks: [], albums: new Set() });
+    const ar = artists.get(name.toLowerCase());
+    ar.tracks.push(t);
+    ar.albums.add(t._album);
+  }
+  S.artists = [...artists.values()].sort((a, b) => collator.compare(sortName(a.name), sortName(b.name)));
+}
+
+function byDiscTrack(a, b) {
+  return (a.discNo || 1) - (b.discNo || 1) || (a.trackNo || 999) - (b.trackNo || 999) || collator.compare(a.path, b.path);
+}
+
+function sortTracks(list, { key, dir }) {
+  const chain = [key, 'artist', 'album', 'discNo', 'trackNo', 'title'].filter((k, i, arr) => arr.indexOf(k) === i);
+  const cmp = (a, b) => {
+    for (const k of chain) {
+      const x = a[k]; const y = b[k];
+      const empty = (v) => v == null || v === '';
+      if (empty(x) && empty(y)) continue;
+      if (empty(x)) return 1;
+      if (empty(y)) return -1;
+      const r = typeof x === 'number' && typeof y === 'number' ? x - y
+        : collator.compare(k === 'artist' ? sortName(x) : String(x), k === 'artist' ? sortName(y) : String(y));
+      if (r) return k === key ? r * dir : r;
+    }
+    return 0;
+  };
+  return [...list].sort(cmp);
+}
+
+const matches = (t) => {
+  if (!S.search) return true;
+  return S.search.split(/\s+/).every((w) => t._s?.includes(w));
+};
+
+async function loadState() {
+  const st = await chew.state();
+  S.tracks = st.tracks;
+  S.playlists = st.playlists;
+  S.settings = st.settings;
+  buildIndex();
+  if (player.track && S.byId.has(player.track.id)) {
+    const fresh = S.byId.get(player.track.id);
+    if (player.transcoding) fresh.playback = 'transcode';
+    player.track = fresh;
+    renderNowPlaying();
+  }
+  renderPlaylists();
+}
+
+// ---------------------------------------------------------------- navigation
+
+function go(view, param = null, push = true) {
+  if (push && (S.view !== view || S.param !== param)) S.history.push([S.view, S.param]);
+  if (['songs', 'albums', 'artists', 'folders', 'queue', 'settings', 'playlist'].includes(view) && view !== 'folders') S.history = [];
+  if (view === 'folders' && param === null) S.history = [];
+  S.view = view;
+  S.param = param;
+  for (const b of document.querySelectorAll('.nav-item')) {
+    b.classList.toggle('active', b.dataset.view === view || (view === 'album' && b.dataset.view === 'albums')
+      || (view === 'artist' && b.dataset.view === 'artists') || (view === 'playlist' && b.dataset.playlist === param));
+  }
+  render(false);
+}
+
+function back() {
+  const prev = S.history.pop();
+  if (prev) go(prev[0], prev[1], false);
+}
+
+// Rebuild the current view. When `keep` is set, scroll positions and selection survive (used for live library updates).
+function render(keep = true) {
+  const content = $('#content');
+  const scrolls = keep ? [...content.querySelectorAll('.table-body, .scroll')].map((el) => el.scrollTop) : [];
+  const selected = keep && S.table ? new Set(S.table.selected) : null;
+  S.table = null;
+
+  const v = VIEWS[S.view](S.param) || VIEWS.songs();
+  S.current = v;
+  $('#view-title').textContent = v.title;
+  $('#view-subtitle').textContent = v.subtitle || '';
+  $('#back').hidden = !S.history.length;
+  $('#play-all').hidden = $('#shuffle-all').hidden = !(v.list && v.list.length) || !!v.ownActions;
+  $('.search').hidden = v.noSearch;
+
+  content.replaceChildren(v.el);
+  hydrateIcons(content);
+  if (selected && S.table) { S.table.selected = selected; S.table.refresh(); }
+  const els = [...content.querySelectorAll('.table-body, .scroll')];
+  scrolls.forEach((y, i) => { if (els[i]) els[i].scrollTop = y; });
+}
+
+function el(html) {
+  const d = document.createElement('div');
+  d.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0';
+  d.innerHTML = html;
+  return d;
+}
+
+function welcome() {
+  const d = el(`<div class="empty-state">
+    <img src="logo.svg" alt="">
+    <h2>Welcome to Chew Player</h2>
+    <p>Point Chew Player at the folders where your music lives. It reads the files, fills in missing details from MusicBrainz and keeps everything organised by folder — nothing is moved or modified.</p>
+    <button class="btn" data-act="add-folder">${icon('folder')}Add Music Folder</button>
+  </div>`);
+  return d;
+}
+
+function emptyResult(text) {
+  return el(`<div class="empty-state"><p>${esc(text)}</p></div>`);
+}
+
+function trackTable(list, opts = {}) {
+  const t = new TrackTable({
+    columns: opts.columns || ['num', 'title', 'artist', 'album', 'year', 'time', 'format'],
+    tracks: list,
+    sort: opts.sortable ? S.sort : null,
+    onSort: opts.sortable ? (s) => { S.sort = s; render(); } : null,
+    onPlay: opts.onPlay || ((i) => playFrom(list, i)),
+    onContext: (ids, i) => trackMenu(ids, opts.context || {}),
+    onReorder: opts.onReorder,
+    onDelete: opts.onDelete,
+    isPlaying: opts.isPlaying || ((t) => t.id === player.currentId && !!player.track),
+  });
+  S.table = t;
+  return t.el;
+}
+
+// ---------------------------------------------------------------- views
+
+const VIEWS = {
+  songs() {
+    if (!S.tracks.length) return { title: 'Songs', el: welcome() };
+    const list = sortTracks(S.tracks.filter(matches), S.sort);
+    const dur = list.reduce((s, t) => s + (t.duration || 0), 0);
+    const d = el('');
+    d.append(list.length ? trackTable(list, { sortable: true, columns: ['num', 'title', 'artist', 'album', 'year', 'genre', 'time', 'format'] }) : emptyResult('No songs match your search.'));
+    return { title: 'Songs', subtitle: `${plural(list.length, 'song')} · ${fmtTime(dur)}`, list, el: d };
+  },
+
+  albums() {
+    if (!S.tracks.length) return { title: 'Albums', el: welcome() };
+    const q = S.search;
+    const albums = S.albums.filter((a) => !q || q.split(/\s+/).every((w) => `${a.title} ${a.artist} ${a.year || ''}`.toLowerCase().includes(w)));
+    const d = el(`<div class="scroll"><div class="pad"><div class="grid">${albums.map((a) => `
+      <div class="card" data-album="${esc(a.key)}">
+        ${coverDiv(a.cover)}
+        <div class="card-title">${esc(a.title)}</div>
+        <div class="card-sub">${esc(a.artist)}${a.year ? ` · ${a.year}` : ''}</div>
+      </div>`).join('')}</div></div></div>`);
+    if (!albums.length) return { title: 'Albums', el: emptyResult('No albums match your search.') };
+    const list = albums.flatMap((a) => a.tracks);
+    return { title: 'Albums', subtitle: plural(albums.length, 'album'), list, el: d };
+  },
+
+  album(key) {
+    const a = S.albumByKey.get(key);
+    if (!a) return VIEWS.albums();
+    const list = a.tracks;
+    const multiDisc = new Set(list.map((t) => t.discNo || 1)).size > 1;
+    const formats = [...new Set(list.map((t) => t.format))].join(', ');
+    const d = el(`<div class="detail-head">
+        ${coverDiv(a.cover)}
+        <div>
+          <div class="kicker">Album</div>
+          <h2>${esc(a.title)}</h2>
+          <div class="meta"><a class="link" data-artist="${esc(a.artist)}">${esc(a.artist)}</a>${a.year ? ` · ${a.year}` : ''} · ${plural(list.length, 'song')} · ${fmtTime(a.duration)} · ${esc(formats)}${multiDisc ? ' · multi-disc' : ''}</div>
+          <div class="actions">
+            <button class="btn" data-act="play">${icon('play')}Play</button>
+            <button class="btn ghost" data-act="shuffle">${icon('shuffle')}Shuffle</button>
+            <button class="btn ghost" data-act="lookup" title="Look up tags and cover art on MusicBrainz">${icon('globe')}Look Up Online</button>
+          </div>
+        </div>
+      </div>`);
+    d.append(trackTable(list, { columns: ['num', 'title', 'artist', 'time', 'format'] }));
+    return { title: a.title, subtitle: a.artist, list, el: d, noSearch: true, ownActions: true };
+  },
+
+  artists() {
+    if (!S.tracks.length) return { title: 'Artists', el: welcome() };
+    const q = S.search;
+    const artists = S.artists.filter((a) => !q || q.split(/\s+/).every((w) => a.name.toLowerCase().includes(w)));
+    if (!artists.length) return { title: 'Artists', el: emptyResult('No artists match your search.') };
+    let html = '<div class="scroll">';
+    let letter = '';
+    for (const a of artists) {
+      const l = (sortName(a.name)[0] || '#').toUpperCase();
+      const L = /[A-Z]/.test(l) ? l : '#';
+      if (L !== letter) { letter = L; html += `<div class="letter">${L}</div>`; }
+      html += `<div class="list-row" data-artist="${esc(a.name)}">
+        <div class="avatar">${esc((sortName(a.name)[0] || '?').toUpperCase())}</div>
+        <div class="name">${esc(a.name)}</div>
+        <div class="meta">${plural(a.albums.size, 'album')} · ${plural(a.tracks.length, 'song')}</div>
+        ${icon('chevron')}
+      </div>`;
+    }
+    html += '</div>';
+    return { title: 'Artists', subtitle: plural(artists.length, 'artist'), list: artists.flatMap((a) => a.tracks), el: el(html) };
+  },
+
+  artist(name) {
+    const a = S.artists.find((x) => x.name === name) || S.artists.find((x) => x.name.toLowerCase() === String(name).toLowerCase());
+    if (!a) return VIEWS.artists();
+    const albums = [...a.albums].map((k) => S.albumByKey.get(k)).filter(Boolean).sort((x, y) => (x.year || 9999) - (y.year || 9999));
+    const list = albums.flatMap((al) => al.tracks.filter((t) => a.tracks.includes(t)));
+    const d = el(`<div class="scroll" style="flex:none;max-height:46%"><div class="pad"><div class="grid">${albums.map((al) => `
+      <div class="card" data-album="${esc(al.key)}">
+        ${coverDiv(al.cover)}
+        <div class="card-title">${esc(al.title)}</div>
+        <div class="card-sub">${al.year || ''}</div>
+      </div>`).join('')}</div></div></div>`);
+    d.append(trackTable(list, { columns: ['num', 'title', 'album', 'year', 'time', 'format'] }));
+    return { title: a.name, subtitle: `${plural(albums.length, 'album')} · ${plural(list.length, 'song')}`, list, el: d, noSearch: true };
+  },
+
+  folders(dir) {
+    const roots = S.settings.folders || [];
+    if (!roots.length) return { title: 'Folders', el: welcome() };
+    const sep = S.info.platform === 'win32' ? '\\' : '/';
+    const lc = (p) => (S.info.platform === 'win32' ? p.toLowerCase() : p);
+    const q = S.search;
+
+    if (!dir) {
+      const rows = roots.map((r) => {
+        const n = S.tracks.filter((t) => lc(t.path).startsWith(lc(r) + sep)).length;
+        return `<div class="list-row" data-folder="${esc(r)}">${icon('folder')}<div class="name">${esc(r)}</div><div class="meta">${plural(n, 'song')}</div>${icon('chevron')}</div>`;
+      }).join('');
+      const list = S.tracks.filter((t) => matches(t) && !t.loose).sort((a, b) => collator.compare(a.path, b.path));
+      const d = el(`<div class="scroll">${rows}</div>`);
+      return { title: 'Folders', subtitle: plural(roots.length, 'library folder'), list, el: d, noSearch: true };
+    }
+
+    const prefix = lc(dir) + sep;
+    const subs = new Map();
+    const here = [];
+    for (const t of S.tracks) {
+      const p = lc(t.path);
+      if (!p.startsWith(prefix)) continue;
+      const rest = t.path.slice(prefix.length);
+      const cut = rest.indexOf(sep);
+      if (cut < 0) { if (matches(t)) here.push(t); continue; }
+      const name = rest.slice(0, cut);
+      if (!subs.has(name)) subs.set(name, { name, count: 0, cover: null, tracks: [] });
+      const s = subs.get(name);
+      s.count++;
+      s.tracks.push(t);
+      if (!s.cover && t.cover) s.cover = t.cover;
+    }
+    here.sort(byDiscTrack);
+    const subList = [...subs.values()].filter((s) => !q || s.name.toLowerCase().includes(q) || s.tracks.some(matches)).sort((a, b) => collator.compare(a.name, b.name));
+
+    const root = roots.find((r) => lc(dir) === lc(r) || lc(dir).startsWith(lc(r) + sep)) || dir;
+    const crumbs = [{ label: root.split(sep).filter(Boolean).pop() || root, path: root }];
+    const relParts = dir.slice(root.length).split(sep).filter(Boolean);
+    let acc = root;
+    for (const part of relParts) { acc = acc + (acc.endsWith(sep) ? '' : sep) + part; crumbs.push({ label: part, path: acc }); }
+
+    const folderCover = here.find((t) => t.cover)?.cover || subList.find((s) => s.cover)?.cover;
+    const name = crumbs[crumbs.length - 1].label;
+    const all = [...here, ...subList.flatMap((s) => s.tracks.filter(matches).sort((a, b) => collator.compare(a.path, b.path)))];
+    const d = el(`
+      <div class="breadcrumb"><button data-folder="">Folders</button>${crumbs.map((c) => `${icon('chevron')}<button data-folder="${esc(c.path)}">${esc(c.label)}</button>`).join('')}</div>
+      <div class="detail-head">
+        ${coverDiv(folderCover)}
+        <div>
+          <div class="kicker">Folder</div>
+          <h2>${esc(name)}</h2>
+          <div class="meta">${subList.length ? `${plural(subList.length, 'folder')} · ` : ''}${plural(all.length, 'song')}</div>
+          <div class="actions">
+            <button class="btn" data-act="play">${icon('play')}Play</button>
+            <button class="btn ghost" data-act="shuffle">${icon('shuffle')}Shuffle</button>
+            <button class="btn ghost" data-act="reveal-folder" data-path="${esc(dir)}">${icon('folder')}${S.info.platform === 'darwin' ? 'Show in Finder' : 'Show in Explorer'}</button>
+          </div>
+        </div>
+      </div>
+      ${subList.length ? `<div class="scroll" style="${here.length ? 'flex:none;max-height:40%' : ''}">${subList.map((s) => `
+        <div class="list-row" data-folder="${esc(dir + sep + s.name)}">${icon('folder')}<div class="name">${esc(s.name)}</div><div class="meta">${plural(s.count, 'song')}</div>${icon('chevron')}</div>`).join('')}</div>` : ''}`);
+    for (const i of d.querySelectorAll('.breadcrumb i')) { i.style.width = '12px'; i.style.height = '12px'; }
+    if (here.length) d.append(trackTable(here, { columns: ['num', 'title', 'artist', 'album', 'time', 'format'] }));
+    return { title: name, subtitle: '', list: all, el: d, ownActions: true };
+  },
+
+  queue() {
+    const ids = player.order.map((i) => player.queue[i]);
+    const list = ids.map((id) => S.byId.get(id) || { id, title: 'Missing file', missing: true });
+    if (!list.length) return { title: 'Queue', el: emptyResult('The queue is empty. Double-click a song to start playing.') };
+    const d = el('');
+    d.append(trackTable(list, {
+      columns: ['index', 'title', 'artist', 'album', 'time', 'format'],
+      onPlay: (i) => player.jumpTo(i),
+      isPlaying: (t, i) => i === player.pos && !!player.track,
+      onDelete: (idx) => { player.removeUpcoming(idx); },
+      context: { queue: true },
+    }));
+    const left = list.slice(player.pos + 1).reduce((s, t) => s + (t.duration || 0), 0);
+    return { title: 'Queue', subtitle: `${plural(list.length, 'song')} · ${fmtTime(left)} remaining`, el: d, noSearch: true };
+  },
+
+  playlist(id) {
+    const p = S.playlists.find((x) => x.id === id);
+    if (!p) return VIEWS.songs();
+    const list = p.trackIds.map((tid) => S.byId.get(tid) || { id: tid, title: 'Missing file', missing: true });
+    const dur = list.reduce((s, t) => s + (t.duration || 0), 0);
+    const d = el(`<div class="detail-head" style="padding-bottom:12px">
+      <div><div class="actions" style="margin-top:0">
+        <button class="btn" data-act="play">${icon('play')}Play</button>
+        <button class="btn ghost" data-act="shuffle">${icon('shuffle')}Shuffle</button>
+        <button class="btn ghost" data-act="export-playlist">Export M3U…</button>
+        <button class="btn ghost" data-act="rename-playlist">Rename</button>
+        <button class="btn danger" data-act="delete-playlist">Delete</button>
+      </div></div></div>`);
+    if (!list.length) {
+      d.append(emptyResult('This playlist is empty. Drag songs onto it in the sidebar, or right-click songs and choose “Add to Playlist”.'));
+    } else {
+      d.append(trackTable(list, {
+        columns: ['index', 'title', 'artist', 'album', 'time', 'format'],
+        onReorder: (idx, at) => {
+          const ids = [...p.trackIds];
+          const moving = idx.map((i) => ids[i]);
+          const before = idx.filter((i) => i < at).length;
+          for (const i of [...idx].sort((a, b) => b - a)) ids.splice(i, 1);
+          ids.splice(at - before, 0, ...moving);
+          p.trackIds = ids;
+          chew.playlists.update(p.id, { trackIds: ids });
+          render();
+        },
+        onDelete: (idx) => removeFromPlaylist(p, idx),
+        context: { playlist: p },
+      }));
+    }
+    return { title: p.name, subtitle: `${plural(list.length, 'song')} · ${fmtTime(dur)}`, list: list.filter((t) => !t.missing), el: d, noSearch: true, ownActions: true };
+  },
+
+  settings() {
+    const f = S.settings.folders || [];
+    const theme = S.settings.theme || 'system';
+    const d = el(`<div class="scroll"><div class="pad settings">
+      <h3>Music folders</h3>
+      <div class="box">
+        ${f.map((p) => `<div class="box-row">${icon('folder')}<div class="grow"><div class="path" title="${esc(p)}">${esc(p)}</div>
+          <div class="hint">${plural(S.tracks.filter((t) => t.root === p).length, 'song')}</div></div>
+          <button class="btn ghost" data-act="reveal-folder" data-path="${esc(p)}">Show</button>
+          <button class="btn danger" data-act="remove-folder" data-path="${esc(p)}">Remove</button></div>`).join('')}
+        <div class="box-row"><div class="grow hint">Chew Player never moves, renames or rewrites your files. Edits are stored in its own library.</div>
+          <button class="btn ghost" data-act="rescan">Rescan</button>
+          <button class="btn" data-act="add-folder">${icon('plus')}Add Folder…</button></div>
+      </div>
+
+      <h3>Online information</h3>
+      <div class="box">
+        <div class="box-row"><div class="grow"><div>Look up missing tags and album art automatically</div>
+          <div class="hint">Uses the open MusicBrainz and Cover Art Archive databases after each scan.</div></div>
+          <label class="switch"><input type="checkbox" data-setting="autoFetch" ${S.settings.autoFetch ? 'checked' : ''}><span></span></label></div>
+        <div class="box-row"><div class="grow hint">Run a lookup now for every song with incomplete info or without cover art.</div>
+          <button class="btn ghost" data-act="fetch">${icon('globe')}Fetch Missing Info</button></div>
+      </div>
+
+      <h3>Appearance</h3>
+      <div class="box"><div class="box-row"><div class="grow">Theme</div>
+        <div class="segmented">${['system', 'light', 'dark'].map((t) => `<button data-theme="${t}" class="${t === theme ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div></div>
+
+      <h3>Playback</h3>
+      <div class="box"><div class="box-row"><div class="grow"><div>Format support</div>
+        <div class="hint">${S.info.ffmpeg
+          ? 'MP3, AAC, FLAC, Ogg, Opus and WAV play natively. Everything else (ALAC, AIFF, WMA, APE, WavPack, Musepack, DSD, …) is decoded on the fly with the bundled FFmpeg.'
+          : 'FFmpeg was not found, so only MP3, AAC, FLAC, Ogg, Opus and WAV can be played.'}</div></div></div></div>
+
+      <h3>About</h3>
+      <div class="box"><div class="box-row"><img src="logo.svg" width="40" height="40" alt="">
+        <div class="grow"><div><b>Chew Player</b> ${esc(S.info.version || '')}</div><div class="hint">A simple, folder-based music player. MIT licensed.</div></div>
+        <button class="btn ghost" data-act="website">Website</button></div></div>
+    </div></div>`);
+    return { title: 'Settings', el: d, noSearch: true };
+  },
+};
+
+// ---------------------------------------------------------------- actions
+
+function playFrom(list, i, shuffle = false) {
+  const playable = list.filter((t) => !t.missing);
+  if (!playable.length) return;
+  const start = Math.max(0, playable.indexOf(list[i]));
+  player.playList(playable.map((t) => t.id), shuffle ? null : start, { shuffle });
+  syncToggles();
+}
+
+function removeFromPlaylist(p, indices) {
+  const drop = new Set(indices);
+  p.trackIds = p.trackIds.filter((_, i) => !drop.has(i));
+  chew.playlists.update(p.id, { trackIds: p.trackIds });
+  render();
+}
+
+async function newPlaylist(ids = []) {
+  const p = await chew.playlists.create('New Playlist', ids);
+  S.playlists.push(p);
+  renderPlaylists();
+  go('playlist', p.id);
+  startRename(p.id);
+}
+
+function addToPlaylist(pid, ids) {
+  const p = S.playlists.find((x) => x.id === pid);
+  if (!p) return;
+  p.trackIds.push(...ids);
+  chew.playlists.update(pid, { add: ids });
+  toast(`Added ${plural(ids.length, 'song')} to “${p.name}”`);
+  renderPlaylists();
+  if (S.view === 'playlist' && S.param === pid) render();
+}
+
+async function lookup(ids) {
+  await chew.fetchMissing(ids);
+}
+
+const revealLabel = () => (S.info.platform === 'darwin' ? 'Show in Finder' : 'Show in Explorer');
+
+async function trackMenu(ids, ctx) {
+  if (!ids.length) return;
+  const items = [
+    { id: 'play', label: ids.length > 1 ? `Play ${ids.length} Songs` : 'Play' },
+    { id: 'next', label: 'Play Next' },
+    { id: 'queue', label: 'Add to Queue' },
+    { type: 'separator' },
+    { label: 'Add to Playlist', submenu: [
+      { id: 'pl:new', label: 'New Playlist…' },
+      ...(S.playlists.length ? [{ type: 'separator' }] : []),
+      ...S.playlists.map((p) => ({ id: `pl:${p.id}`, label: p.name })),
+    ] },
+    { type: 'separator' },
+    { id: 'info', label: ids.length > 1 ? 'Edit Info…' : 'Get Info…' },
+    { id: 'lookup', label: 'Look Up Online' },
+    { id: 'reveal', label: revealLabel(), enabled: ids.length === 1 },
+  ];
+  if (ctx.playlist) items.push({ type: 'separator' }, { id: 'remove-pl', label: 'Remove from Playlist' });
+  if (ctx.queue) items.push({ type: 'separator' }, { id: 'remove-q', label: 'Remove from Queue' });
+  const choice = await chew.contextMenu(items);
+  if (!choice) return;
+  const tracks = ids.map((id) => S.byId.get(id)).filter(Boolean);
+  if (choice === 'play') playFrom(tracks, 0);
+  else if (choice === 'next') { player.playNext(tracks.map((t) => t.id)); toast('Playing next'); }
+  else if (choice === 'queue') { player.enqueue(tracks.map((t) => t.id)); toast(`Added ${plural(tracks.length, 'song')} to the queue`); }
+  else if (choice === 'pl:new') newPlaylist(ids);
+  else if (choice.startsWith('pl:')) addToPlaylist(choice.slice(3), ids);
+  else if (choice === 'info') openInfo(ids);
+  else if (choice === 'lookup') lookup(ids);
+  else if (choice === 'reveal') chew.reveal(ids[0]);
+  else if (choice === 'remove-pl') removeFromPlaylist(ctx.playlist, S.table.selectedIndices());
+  else if (choice === 'remove-q') player.removeUpcoming(S.table.selectedIndices());
+}
+
+async function groupMenu(tracks, extra = []) {
+  const items = [
+    { id: 'play', label: 'Play' },
+    { id: 'shuffle', label: 'Shuffle' },
+    { id: 'next', label: 'Play Next' },
+    { id: 'queue', label: 'Add to Queue' },
+    { type: 'separator' },
+    { label: 'Add to Playlist', submenu: [
+      { id: 'pl:new', label: 'New Playlist…' },
+      ...(S.playlists.length ? [{ type: 'separator' }] : []),
+      ...S.playlists.map((p) => ({ id: `pl:${p.id}`, label: p.name })),
+    ] },
+    { id: 'lookup', label: 'Look Up Online' },
+    ...extra,
+  ];
+  const choice = await chew.contextMenu(items);
+  const ids = tracks.map((t) => t.id);
+  if (choice === 'play') playFrom(tracks, 0);
+  else if (choice === 'shuffle') playFrom(tracks, 0, true);
+  else if (choice === 'next') player.playNext(ids);
+  else if (choice === 'queue') { player.enqueue(ids); toast(`Added ${plural(ids.length, 'song')} to the queue`); }
+  else if (choice === 'pl:new') newPlaylist(ids);
+  else if (choice?.startsWith('pl:')) addToPlaylist(choice.slice(3), ids);
+  else if (choice === 'lookup') lookup(ids);
+  return choice;
+}
+
+function folderTracks(dir) {
+  const sep = S.info.platform === 'win32' ? '\\' : '/';
+  const lc = (p) => (S.info.platform === 'win32' ? p.toLowerCase() : p);
+  const prefix = lc(dir) + sep;
+  return S.tracks.filter((t) => lc(t.path).startsWith(prefix)).sort((a, b) => collator.compare(a.path, b.path));
+}
+
+// ---------------------------------------------------------------- info dialog
+
+function openInfo(ids) {
+  const tracks = ids.map((id) => S.byId.get(id)).filter(Boolean);
+  if (!tracks.length) return;
+  const fields = [
+    ['title', 'Title', 'wide'], ['artist', 'Artist'], ['albumArtist', 'Album Artist'],
+    ['album', 'Album', 'wide'], ['year', 'Year'], ['genre', 'Genre'], ['trackNo', 'Track'], ['discNo', 'Disc'],
+  ];
+  const common = (f) => {
+    const vals = new Set(tracks.map((t) => t[f] ?? ''));
+    return vals.size === 1 ? [...vals][0] : null;
+  };
+  const one = tracks.length === 1 ? tracks[0] : null;
+  const tech = one ? [
+    ['File', one.path],
+    ['Format', [one.format, one.codec].filter(Boolean).join(' · ')],
+    ['Quality', [one.bitrate && `${one.bitrate} kbps`, one.sampleRate && `${(one.sampleRate / 1000).toFixed(1)} kHz`, one.bitsPerSample && `${one.bitsPerSample} bit`, one.channels && (one.channels === 2 ? 'stereo' : one.channels === 1 ? 'mono' : `${one.channels} ch`)].filter(Boolean).join(' · ') || '—'],
+    ['Length', fmtTime(one.duration)],
+    ['Size', `${(one.size / 1048576).toFixed(1)} MB`],
+    ['Playback', one.playback === 'transcode' ? 'via FFmpeg' : 'native'],
+  ] : null;
+  const modal = $('#modal');
+  modal.innerHTML = `<div class="modal">
+    <h2>${one ? esc(one.title) : `Edit ${tracks.length} songs`}</h2>
+    <div class="sub">${one ? esc([one.artist, one.album].filter(Boolean).join(' — ')) : 'Only fields you change are applied to all selected songs.'}</div>
+    <form class="form" id="info-form">
+      ${fields.map(([f, label, cls]) => {
+        const v = common(f);
+        return `<label class="${cls || ''}">${label}<input name="${f}" value="${esc(v ?? '')}" placeholder="${v === null ? 'Mixed' : ''}" data-orig="${esc(v ?? '')}"></label>`;
+      }).join('')}
+    </form>
+    ${tech ? `<div class="file-info">${tech.map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('')}</div>` : ''}
+    <div class="modal-actions">
+      <div><button class="btn ghost" data-m="lookup">${icon('globe')}Look Up Online</button></div>
+      <div><button class="btn ghost" data-m="cancel">Cancel</button><button class="btn" data-m="save">Save</button></div>
+    </div>
+  </div>`;
+  hydrateIcons(modal);
+  modal.hidden = false;
+  modal.querySelector('input')?.focus();
+  const close = () => { modal.hidden = true; modal.innerHTML = ''; };
+  const save = async () => {
+    const edits = {};
+    for (const input of modal.querySelectorAll('#info-form input')) {
+      if (input.value !== input.dataset.orig) edits[input.name] = input.value;
+    }
+    if (Object.keys(edits).length) await chew.editTracks(ids, edits);
+    close();
+  };
+  modal.onclick = (e) => {
+    if (e.target === modal) return close();
+    const m = e.target.closest('[data-m]')?.dataset.m;
+    if (m === 'cancel') close();
+    if (m === 'save') save();
+    if (m === 'lookup') { lookup(ids); close(); }
+  };
+  modal.onkeydown = (e) => {
+    if (e.key === 'Escape') close();
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+  };
+}
+
+// ---------------------------------------------------------------- sidebar playlists
+
+function renderPlaylists() {
+  const box = $('#playlists');
+  if (box.querySelector('input')) return; // don't clobber an active rename
+  box.innerHTML = S.playlists.map((p) => `
+    <button class="nav-item${S.view === 'playlist' && S.param === p.id ? ' active' : ''}" data-playlist="${p.id}">
+      ${icon('playlist')}<span>${esc(p.name)}</span><span class="count">${p.trackIds.length || ''}</span>
+    </button>`).join('');
+}
+
+function startRename(id) {
+  const btn = $(`[data-playlist="${id}"]`);
+  const p = S.playlists.find((x) => x.id === id);
+  if (!btn || !p) return;
+  const span = btn.querySelector('span');
+  const input = document.createElement('input');
+  input.value = p.name;
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (ok) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    input.remove();
+    if (ok && name && name !== p.name) { p.name = name; chew.playlists.update(id, { name }); }
+    renderPlaylists();
+    if (S.view === 'playlist' && S.param === id) render();
+  };
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') finish(true);
+    if (e.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', (e) => e.stopPropagation());
+}
+
+async function deletePlaylist(id) {
+  const p = S.playlists.find((x) => x.id === id);
+  if (!p) return;
+  if (!(await chew.confirm(`Delete the playlist “${p.name}”?`, 'The songs themselves stay in your library.', 'Delete'))) return;
+  await chew.playlists.remove(id);
+  S.playlists = S.playlists.filter((x) => x.id !== id);
+  renderPlaylists();
+  if (S.view === 'playlist' && S.param === id) go('songs');
+}
+
+// ---------------------------------------------------------------- player UI
+
+const seek = $('#seek');
+const volume = $('#volume');
+let seeking = false;
+
+function setRangePct(input) {
+  const pct = ((input.value - input.min) / (input.max - input.min)) * 100;
+  input.style.setProperty('--pct', `${pct}%`);
+}
+
+function renderNowPlaying() {
+  const t = player.track;
+  $('#now-title').textContent = t ? t.title : 'Nothing playing';
+  $('#now-artist').textContent = t ? [t.artist, t.album].filter(Boolean).join(' — ') : 'Pick a song and press play';
+  const c = $('#now-cover');
+  c.className = `now-cover cover${t?.cover ? '' : ' empty'}`;
+  c.style.backgroundImage = t?.cover ? `url('${coverUrl(t.cover)}')` : '';
+  const tech = t ? [t.format, t.lossless && t.sampleRate ? `${+(t.sampleRate / 1000).toFixed(1)} kHz` : t.bitrate ? `${t.bitrate} kbps` : '', t.lossless && t.bitsPerSample ? `${t.bitsPerSample} bit` : ''].filter(Boolean).join(' · ') : '';
+  $('#now-tech').textContent = tech;
+  document.title = t ? `${t.title} — ${t.artist || 'Chew Player'}` : 'Chew Player';
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = t ? new MediaMetadata({
+      title: t.title || '', artist: t.artist || '', album: t.album || '',
+      artwork: t.cover ? [{ src: coverUrl(t.cover), sizes: '500x500' }] : [],
+    }) : null;
+  }
+}
+
+function renderTime() {
+  const cur = player.currentTime;
+  const dur = player.duration;
+  $('#time-cur').textContent = fmtTime(cur);
+  $('#time-dur').textContent = fmtTime(dur);
+  if (!seeking) {
+    seek.value = dur ? Math.round((cur / dur) * 1000) : 0;
+    setRangePct(seek);
+  }
+}
+
+function syncToggles() {
+  $('#btn-shuffle').classList.toggle('on', player.shuffle);
+  const r = $('#btn-repeat');
+  r.classList.toggle('on', player.repeat !== 'off');
+  setIcon(r, 'repeat');
+  r.querySelector('.badge')?.remove();
+  if (player.repeat === 'one') r.insertAdjacentHTML('beforeend', '<span class="badge">1</span>');
+  r.title = { off: 'Repeat: off', all: 'Repeat: all', one: 'Repeat: one' }[player.repeat];
+}
+
+function setVolume(v, persist = true) {
+  v = Math.max(0, Math.min(1, v));
+  player.setVolume(v);
+  volume.value = Math.round(v * 100);
+  setRangePct(volume);
+  setIcon($('#btn-mute'), v === 0 ? 'mute' : 'volume');
+  if (persist) { clearTimeout(setVolume.t); setVolume.t = setTimeout(() => chew.setSetting('volume', v), 400); }
+}
+
+player.addEventListener('time', renderTime);
+player.addEventListener('state', () => {
+  setIcon($('#btn-play'), player.playing ? 'pause' : 'play');
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = player.playing ? 'playing' : 'paused';
+});
+player.addEventListener('track', () => {
+  renderNowPlaying();
+  if (S.table) S.table.refresh();
+  if (S.view === 'queue') render();
+});
+player.addEventListener('queue', () => { if (S.view === 'queue') render(); });
+player.addEventListener('error', (e) => toast(`Can't play “${e.detail?.title}”`));
+
+seek.addEventListener('input', () => {
+  seeking = true;
+  setRangePct(seek);
+  $('#time-cur').textContent = fmtTime((seek.value / 1000) * player.duration);
+});
+seek.addEventListener('change', () => {
+  player.seek((seek.value / 1000) * player.duration);
+  seeking = false;
+});
+volume.addEventListener('input', () => setVolume(volume.value / 100));
+let lastVolume = 0.8;
+$('#btn-mute').addEventListener('click', () => {
+  if (player.audio.volume > 0) { lastVolume = player.audio.volume; setVolume(0); } else setVolume(lastVolume || 0.8);
+});
+$('#btn-play').addEventListener('click', () => player.toggle());
+$('#btn-next').addEventListener('click', () => player.next());
+$('#btn-prev').addEventListener('click', () => player.prev());
+$('#btn-shuffle').addEventListener('click', () => { player.setShuffle(!player.shuffle); syncToggles(); chew.setSetting('shuffle', player.shuffle); });
+$('#btn-repeat').addEventListener('click', () => {
+  player.repeat = { off: 'all', all: 'one', one: 'off' }[player.repeat];
+  syncToggles();
+  chew.setSetting('repeat', player.repeat);
+});
+$('.now').addEventListener('click', () => { if (player.track) go('queue'); });
+
+if ('mediaSession' in navigator) {
+  const ms = navigator.mediaSession;
+  ms.setActionHandler('play', () => player.play());
+  ms.setActionHandler('pause', () => player.pause());
+  ms.setActionHandler('previoustrack', () => player.prev());
+  ms.setActionHandler('nexttrack', () => player.next());
+  try { ms.setActionHandler('seekto', (d) => player.seek(d.seekTime)); } catch { /* unsupported */ }
+}
+
+// ---------------------------------------------------------------- status & toasts
+
+function toast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  $('#toasts').append(t);
+  setTimeout(() => t.remove(), 3200);
+}
+
+const status = { scan: null, fetch: null };
+function renderStatus() {
+  const box = $('#status');
+  const bar = $('#status-bar');
+  const prog = bar.parentElement;
+  const s = status.scan || status.fetch;
+  box.hidden = !s;
+  if (!s) return;
+  $('#status-label').textContent = s.label;
+  $('#status-cancel').hidden = !status.fetch || !!status.scan;
+  prog.classList.toggle('indeterminate', !s.total);
+  bar.style.width = s.total ? `${Math.round((s.done / s.total) * 100)}%` : '0';
+}
+
+chew.onScanProgress((p) => {
+  if (p.phase === 'done') status.scan = null;
+  else if (p.phase === 'walk') status.scan = { label: `Finding music… ${p.total ? p.total.toLocaleString() : ''}`, done: 0, total: 0 };
+  else status.scan = { label: `Reading ${p.done.toLocaleString()} of ${p.total.toLocaleString()}`, done: p.done, total: p.total };
+  renderStatus();
+});
+
+let lastErr = 0;
+chew.onFetchProgress((p) => {
+  if (p.phase === 'done') {
+    status.fetch = null;
+    if (p.updated) toast(`Updated info for ${plural(p.updated, 'item')} from MusicBrainz`);
+  } else if (p.phase === 'error') {
+    if (Date.now() - lastErr > 10000) { lastErr = Date.now(); toast(`Online lookup: ${p.message}`); }
+  } else if (p.phase === 'start' || p.phase === 'tags') {
+    status.fetch = { label: `Looking up info… ${p.done}/${p.total}`, done: p.done, total: p.total };
+  } else if (p.phase === 'covers') {
+    status.fetch = { label: `Fetching album art… ${p.done}/${p.total}`, done: p.done, total: p.total };
+  }
+  renderStatus();
+});
+$('#status-cancel').addEventListener('click', () => chew.cancelFetch());
+
+chew.onLibraryChanged(async () => {
+  await loadState();
+  if ($('#modal').hidden) render(true);
+});
+
+chew.onPlayTracks(async (ids) => {
+  await loadState();
+  render(true);
+  const ok = ids.filter((id) => S.byId.has(id));
+  if (ok.length) player.playList(ok, 0);
+});
+
+// ---------------------------------------------------------------- events
+
+document.addEventListener('click', async (e) => {
+  const nav = e.target.closest('.nav-item[data-view]');
+  if (nav) return go(nav.dataset.view);
+  const pl = e.target.closest('.nav-item[data-playlist]');
+  if (pl) return go('playlist', pl.dataset.playlist);
+
+  const card = e.target.closest('[data-album]');
+  if (card) return go('album', card.dataset.album);
+  const artist = e.target.closest('[data-artist]');
+  if (artist) return go('artist', artist.dataset.artist);
+  const folder = e.target.closest('[data-folder]');
+  if (folder) return go('folders', folder.dataset.folder || null);
+  const theme = e.target.closest('[data-theme]');
+  if (theme) {
+    S.settings.theme = theme.dataset.theme;
+    await chew.setSetting('theme', theme.dataset.theme);
+    return render();
+  }
+
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const list = S.current?.list || [];
+  switch (act.dataset.act) {
+    case 'add-folder': chew.addFolder(); break;
+    case 'remove-folder':
+      if (await chew.confirm('Remove this folder from the library?', `${act.dataset.path}\n\nThe files on disk are not touched.`, 'Remove')) {
+        await chew.removeFolder(act.dataset.path);
+      }
+      break;
+    case 'reveal-folder': chew.openFolder(act.dataset.path); break;
+    case 'rescan': chew.scan(); break;
+    case 'fetch': chew.fetchMissing(); break;
+    case 'website': window.open('https://fmatsch.github.io/chew-player/'); break;
+    case 'play': playFrom(list, 0); break;
+    case 'shuffle': playFrom(list, 0, true); break;
+    case 'lookup': lookup(list.map((t) => t.id)); break;
+    case 'export-playlist': if (await chew.playlists.export(S.param)) toast('Playlist exported'); break;
+    case 'rename-playlist': startRename(S.param); break;
+    case 'delete-playlist': deletePlaylist(S.param); break;
+    default: break;
+  }
+});
+
+document.addEventListener('change', (e) => {
+  const key = e.target.dataset?.setting;
+  if (key) { S.settings[key] = e.target.checked; chew.setSetting(key, e.target.checked); }
+});
+
+document.addEventListener('dblclick', (e) => {
+  const pl = e.target.closest('.nav-item[data-playlist]');
+  if (pl) startRename(pl.dataset.playlist);
+});
+
+document.addEventListener('contextmenu', async (e) => {
+  const pl = e.target.closest('.nav-item[data-playlist]');
+  if (pl) {
+    e.preventDefault();
+    const id = pl.dataset.playlist;
+    const p = S.playlists.find((x) => x.id === id);
+    const choice = await chew.contextMenu([
+      { id: 'play', label: 'Play' }, { id: 'shuffle', label: 'Shuffle' }, { type: 'separator' },
+      { id: 'rename', label: 'Rename' }, { id: 'export', label: 'Export as M3U…' }, { type: 'separator' },
+      { id: 'delete', label: 'Delete Playlist' },
+    ]);
+    const tracks = p.trackIds.map((t) => S.byId.get(t)).filter(Boolean);
+    if (choice === 'play') playFrom(tracks, 0);
+    if (choice === 'shuffle') playFrom(tracks, 0, true);
+    if (choice === 'rename') startRename(id);
+    if (choice === 'export' && (await chew.playlists.export(id))) toast('Playlist exported');
+    if (choice === 'delete') deletePlaylist(id);
+    return;
+  }
+  const card = e.target.closest('[data-album]');
+  if (card) {
+    e.preventDefault();
+    const a = S.albumByKey.get(card.dataset.album);
+    if (a) groupMenu(a.tracks);
+    return;
+  }
+  const artist = e.target.closest('.list-row[data-artist]');
+  if (artist) {
+    e.preventDefault();
+    const a = S.artists.find((x) => x.name === artist.dataset.artist);
+    if (a) groupMenu(a.tracks);
+    return;
+  }
+  const folder = e.target.closest('.list-row[data-folder]');
+  if (folder) {
+    e.preventDefault();
+    const dir = folder.dataset.folder;
+    const choice = await groupMenu(folderTracks(dir), [{ type: 'separator' }, { id: 'reveal', label: revealLabel() }]);
+    if (choice === 'reveal') chew.openFolder(dir);
+    return;
+  }
+  if (!e.target.closest('input')) e.preventDefault();
+});
+
+$('#back').addEventListener('click', back);
+$('#new-playlist').addEventListener('click', (e) => { e.stopPropagation(); newPlaylist(); });
+$('#play-all').addEventListener('click', () => playFrom(S.current?.list || [], 0));
+$('#shuffle-all').addEventListener('click', () => playFrom(S.current?.list || [], 0, true));
+
+const search = $('#search');
+search.addEventListener('input', () => {
+  S.search = search.value.trim().toLowerCase();
+  clearTimeout(search.t);
+  search.t = setTimeout(() => render(false), 120);
+});
+search.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { search.value = ''; S.search = ''; render(false); search.blur(); }
+  if (e.key === 'ArrowDown' || e.key === 'Enter') { S.table?.body.focus(); }
+});
+
+document.addEventListener('keydown', (e) => {
+  const typing = e.target.closest('input, textarea, [contenteditable]');
+  if (typing || !$('#modal').hidden) return;
+  if (e.code === 'Space') { e.preventDefault(); player.toggle(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === '[') back();
+  if (e.key === 'Backspace' && !S.table && S.history.length) back();
+});
+
+// Drag tracks onto sidebar playlists; drop files/folders from the OS anywhere.
+const isTracks = (e) => e.dataTransfer?.types.includes('application/x-chew-tracks');
+const isFiles = (e) => e.dataTransfer?.types.includes('Files');
+$('#nav').addEventListener('dragover', (e) => {
+  const target = e.target.closest('.nav-item[data-playlist], #new-playlist');
+  if (!target || !isTracks(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  document.querySelectorAll('.drop-target').forEach((x) => x !== target && x.classList.remove('drop-target'));
+  target.classList.add('drop-target');
+});
+$('#nav').addEventListener('dragleave', (e) => e.target.closest?.('.drop-target')?.classList.remove('drop-target'));
+$('#nav').addEventListener('drop', (e) => {
+  const target = e.target.closest('.nav-item[data-playlist], #new-playlist');
+  document.querySelectorAll('.drop-target').forEach((x) => x.classList.remove('drop-target'));
+  if (!target || !isTracks(e)) return;
+  e.preventDefault();
+  const ids = JSON.parse(e.dataTransfer.getData('application/x-chew-tracks'));
+  if (target.id === 'new-playlist') newPlaylist(ids); else addToPlaylist(target.dataset.playlist, ids);
+});
+
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => { if (isFiles(e) && !isTracks(e)) { dragDepth++; $('#drop-overlay').hidden = false; } });
+window.addEventListener('dragleave', (e) => { if (isFiles(e) && !isTracks(e) && --dragDepth <= 0) { dragDepth = 0; $('#drop-overlay').hidden = true; } });
+window.addEventListener('dragover', (e) => { if (isFiles(e) && !isTracks(e)) e.preventDefault(); });
+window.addEventListener('drop', (e) => {
+  if (!isFiles(e) || isTracks(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  $('#drop-overlay').hidden = true;
+  const paths = [...e.dataTransfer.files].map((f) => chew.pathForFile(f)).filter(Boolean);
+  if (paths.length) chew.openPaths(paths);
+});
+
+chew.onCommand(async (cmd) => {
+  if (cmd === 'toggle') player.toggle();
+  else if (cmd === 'next') player.next();
+  else if (cmd === 'prev') player.prev();
+  else if (cmd === 'vol-up') setVolume(player.audio.volume + 0.05);
+  else if (cmd === 'vol-down') setVolume(player.audio.volume - 0.05);
+  else if (cmd === 'shuffle') $('#btn-shuffle').click();
+  else if (cmd === 'repeat') $('#btn-repeat').click();
+  else if (cmd === 'find') { if (S.current?.noSearch) go('songs'); search.focus(); search.select(); }
+  else if (cmd === 'new-playlist') newPlaylist();
+  else if (cmd.startsWith('show-playlist:')) { await loadState(); go('playlist', cmd.slice(14)); }
+});
+
+// ---------------------------------------------------------------- boot
+
+(async function boot() {
+  document.documentElement.style.setProperty('--note-mask', noteMask);
+  S.info = await chew.info();
+  document.body.classList.add(`platform-${S.info.platform}`);
+  player.ffmpeg = S.info.ffmpeg;
+  hydrateIcons();
+  await loadState();
+  player.shuffle = !!S.settings.shuffle;
+  player.repeat = S.settings.repeat || 'off';
+  setVolume(S.settings.volume ?? 0.8, false);
+  syncToggles();
+  renderNowPlaying();
+  renderTime();
+  go('songs', null, false);
+})();

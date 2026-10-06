@@ -1,0 +1,294 @@
+import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu, nativeTheme } from 'electron';
+import { createReadStream } from 'node:fs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+import { Library } from './library.js';
+import { extOf, isAudioFile } from './formats.js';
+import { transcodeStream, ffmpegPath } from './ffmpeg.js';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const isMac = process.platform === 'darwin';
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'chew', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+]);
+
+// Development helpers: isolated profile and scripted screenshots (see README → Development).
+if (process.env.CHEW_USER_DATA) app.setPath('userData', path.resolve(process.env.CHEW_USER_DATA));
+
+if (!app.requestSingleInstanceLock()) app.quit();
+
+let win = null;
+let library = null;
+const pendingOpen = [];
+
+const MIME = {
+  mp3: 'audio/mpeg', mp2: 'audio/mpeg', flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+  wav: 'audio/wav', wave: 'audio/wav', webm: 'audio/webm', m4a: 'audio/mp4', m4b: 'audio/mp4', mp4: 'audio/mp4',
+  aac: 'audio/aac', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp',
+};
+
+// Byte-range aware file response so <audio> can seek.
+async function serveFile(file, request) {
+  const { size } = await fs.stat(file);
+  const headers = { 'Content-Type': MIME[extOf(file)] || 'application/octet-stream', 'Accept-Ranges': 'bytes' };
+  let start = 0;
+  let end = size - 1;
+  let status = 200;
+  const m = /bytes=(\d*)-(\d*)/.exec(request.headers.get('range') || '');
+  if (m && (m[1] || m[2])) {
+    if (m[1] === '') { start = Math.max(0, size - Number(m[2])); } else {
+      start = Number(m[1]);
+      if (m[2]) end = Math.min(Number(m[2]), size - 1);
+    }
+    if (start > end || start >= size) return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${size}` } });
+    status = 206;
+    headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+  }
+  headers['Content-Length'] = String(end - start + 1);
+  return new Response(Readable.toWeb(createReadStream(file, { start, end })), { status, headers });
+}
+
+function registerProtocol() {
+  protocol.handle('chew', async (request) => {
+    try {
+      const url = new URL(request.url);
+      if (url.host === 'media' || url.host === 'transcode') {
+        const track = library.data.tracks[url.pathname.slice(1)];
+        if (!track) return new Response('Not found', { status: 404 });
+        if (url.host === 'media') return await serveFile(track.path, request);
+        const t = Number(url.searchParams.get('t')) || 0;
+        return new Response(transcodeStream(track.path, t, track.sampleRate || 0), { headers: { 'Content-Type': 'audio/flac' } });
+      }
+      if (url.host === 'cover') {
+        const p = url.searchParams.get('p');
+        if (!library.isKnownCover(p)) return new Response('Forbidden', { status: 403 });
+        const res = await serveFile(p, request);
+        res.headers.set('Cache-Control', 'max-age=31536000');
+        return res;
+      }
+      return new Response('Not found', { status: 404 });
+    } catch (e) {
+      return new Response(String(e.message), { status: 500 });
+    }
+  });
+}
+
+const send = (channel, payload) => win && !win.isDestroyed() && win.webContents.send(channel, payload);
+
+const overlayColors = () => (nativeTheme.shouldUseDarkColors
+  ? { color: '#14171f', symbolColor: '#e8eaf0', height: 44 }
+  : { color: '#f4f5f8', symbolColor: '#1b1f2a', height: 44 });
+
+function createWindow() {
+  const b = library.data.settings.bounds || {};
+  win = new BrowserWindow({
+    width: b.width || 1240,
+    height: b.height || 780,
+    x: b.x,
+    y: b.y,
+    minWidth: 860,
+    minHeight: 540,
+    show: false,
+    title: 'Chew Player',
+    icon: path.join(here, '../../assets/icon.png'),
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#14171f' : '#f4f5f8',
+    titleBarStyle: 'hidden',
+    ...(isMac ? { trafficLightPosition: { x: 16, y: 15 } } : { titleBarOverlay: overlayColors() }),
+    webPreferences: {
+      preload: path.join(here, '../preload.cjs'),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  win.loadFile(path.join(here, '../renderer/index.html'));
+  win.once('ready-to-show', () => win.show());
+  const saveBounds = () => { if (!win.isMaximized() && !win.isFullScreen()) { library.data.settings.bounds = win.getBounds(); library.save(); } };
+  win.on('resize', saveBounds);
+  win.on('move', saveBounds);
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\//.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+}
+
+async function openPaths(paths) {
+  const ids = [];
+  let added = false;
+  for (const p of paths) {
+    try {
+      const st = await fs.stat(p);
+      if (st.isDirectory()) added = library.addFolder(p) || added;
+      else if (isAudioFile(p)) ids.push((await library.addLoose(p)).id);
+    } catch { /* ignore */ }
+  }
+  if (added) library.scan();
+  if (ids.length) send('play-tracks', ids);
+}
+
+async function chooseFolder() {
+  const r = await dialog.showOpenDialog(win, { title: 'Add Music Folder', properties: ['openDirectory', 'multiSelections', 'createDirectory'] });
+  if (r.canceled) return false;
+  let added = false;
+  for (const dir of r.filePaths) added = library.addFolder(dir) || added;
+  if (added) library.scan();
+  return added;
+}
+
+async function importPlaylist() {
+  const r = await dialog.showOpenDialog(win, { title: 'Import Playlist', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Playlists', extensions: ['m3u', 'm3u8'] }] });
+  if (r.canceled) return null;
+  let last = null;
+  for (const f of r.filePaths) last = await library.importM3U(f);
+  return last;
+}
+
+function buildMenu() {
+  const cmd = (command) => () => send('command', command);
+  const template = [
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Add Music Folder…', accelerator: 'CmdOrCtrl+O', click: () => chooseFolder() },
+        { label: 'Rescan Library', accelerator: 'CmdOrCtrl+R', click: () => library.scan() },
+        { label: 'Fetch Missing Info Online', click: () => library.fetchMissing() },
+        { type: 'separator' },
+        { label: 'New Playlist', accelerator: 'CmdOrCtrl+N', click: cmd('new-playlist') },
+        { label: 'Import Playlist…', click: async () => { const r = await importPlaylist(); if (r) send('command', `show-playlist:${r.playlist.id}`); } },
+        { type: 'separator' },
+        isMac ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    { role: 'editMenu' },
+    {
+      label: 'Controls',
+      submenu: [
+        { label: 'Play / Pause', click: cmd('toggle') },
+        { label: 'Next', accelerator: 'CmdOrCtrl+Right', click: cmd('next') },
+        { label: 'Previous', accelerator: 'CmdOrCtrl+Left', click: cmd('prev') },
+        { type: 'separator' },
+        { label: 'Volume Up', accelerator: 'CmdOrCtrl+Up', click: cmd('vol-up') },
+        { label: 'Volume Down', accelerator: 'CmdOrCtrl+Down', click: cmd('vol-down') },
+        { type: 'separator' },
+        { label: 'Shuffle', click: cmd('shuffle') },
+        { label: 'Repeat', click: cmd('repeat') },
+        { type: 'separator' },
+        { label: 'Find', accelerator: 'CmdOrCtrl+F', click: cmd('find') },
+      ],
+    },
+    { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
+    { role: 'windowMenu' },
+    { role: 'help', submenu: [{ label: 'Chew Player Website', click: () => shell.openExternal('https://fmatsch.github.io/chew-player/') }] },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function registerIpc() {
+  ipcMain.handle('state', () => library.state());
+  ipcMain.handle('info', () => ({ version: app.getVersion(), platform: process.platform, ffmpeg: !!ffmpegPath() }));
+  ipcMain.handle('folders:add', () => chooseFolder());
+  ipcMain.handle('folders:remove', (_e, dir) => library.removeFolder(dir));
+  ipcMain.handle('scan', () => { library.scan(); });
+  ipcMain.handle('fetch', (_e, ids) => { library.fetchMissing(ids || null).catch(() => {}); });
+  ipcMain.handle('fetch:cancel', () => { library.cancelFetch = true; });
+  ipcMain.handle('settings:set', (_e, key, value) => {
+    library.data.settings[key] = value;
+    if (key === 'theme') nativeTheme.themeSource = value;
+    library.save();
+  });
+  ipcMain.handle('tracks:edit', (_e, ids, edits) => library.editTracks(ids, edits));
+  ipcMain.handle('tracks:reveal', (_e, id) => { const t = library.data.tracks[id]; if (t) shell.showItemInFolder(t.path); });
+  ipcMain.handle('folder:reveal', (_e, dir) => shell.openPath(dir));
+  ipcMain.handle('open-paths', (_e, paths) => openPaths(paths));
+  ipcMain.handle('playlist:create', (_e, name, ids) => library.createPlaylist(name, ids));
+  ipcMain.handle('playlist:update', (_e, id, patch) => library.updatePlaylist(id, patch));
+  ipcMain.handle('playlist:delete', (_e, id) => library.deletePlaylist(id));
+  ipcMain.handle('playlist:import', () => importPlaylist());
+  ipcMain.handle('playlist:export', async (_e, id) => {
+    const p = library.playlist(id);
+    if (!p) return false;
+    const r = await dialog.showSaveDialog(win, { title: 'Export Playlist', defaultPath: `${p.name.replace(/[\\/:*?"<>|]/g, '_')}.m3u8`, filters: [{ name: 'M3U Playlist', extensions: ['m3u8', 'm3u'] }] });
+    if (r.canceled || !r.filePath) return false;
+    await library.exportM3U(id, r.filePath);
+    return true;
+  });
+  ipcMain.handle('confirm', async (_e, message, detail, okLabel) => {
+    const r = await dialog.showMessageBox(win, { type: 'question', message, detail, buttons: [okLabel || 'OK', 'Cancel'], defaultId: 0, cancelId: 1 });
+    return r.response === 0;
+  });
+
+  // Native context menus: the renderer describes the items, we resolve with the clicked id (or null).
+  ipcMain.handle('context-menu', (_e, items) => new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const build = (list) => list.map((it) => (it.type === 'separator' ? { type: 'separator' } : {
+      label: it.label,
+      enabled: it.enabled !== false,
+      type: it.checked != null ? 'checkbox' : 'normal',
+      checked: !!it.checked,
+      ...(it.submenu ? { submenu: build(it.submenu) } : { click: () => finish(it.id) }),
+    }));
+    Menu.buildFromTemplate(build(items)).popup({ window: win, callback: () => setTimeout(() => finish(null), 100) });
+  }));
+}
+
+// CHEW_CAPTURE=out.png [CHEW_STEPS='js;;js'] [CHEW_DELAY=ms]: run renderer snippets, then save a screenshot per step.
+async function captureAndQuit(out) {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const delay = Number(process.env.CHEW_DELAY) || 2500;
+  const steps = (process.env.CHEW_STEPS || '').split(';;').filter(Boolean);
+  await wait(delay);
+  const shots = steps.length ? steps : [''];
+  for (let i = 0; i < shots.length; i++) {
+    if (shots[i]) {
+      const r = await win.webContents.executeJavaScript(`(async () => { ${shots[i]} })()`).catch((e) => `ERR ${e.message}`);
+      if (r !== undefined) console.log(`step ${i}:`, typeof r === 'string' ? r : JSON.stringify(r));
+      await wait(1200);
+    }
+    const img = await win.webContents.capturePage();
+    await fs.writeFile(shots.length > 1 ? out.replace(/\.png$/, `-${i}.png`) : out, img.toPNG());
+  }
+  await library.saveNow();
+  app.exit(0);
+}
+
+app.on('open-file', (e, file) => {
+  e.preventDefault();
+  if (library && win) openPaths([file]); else pendingOpen.push(file);
+});
+
+app.on('second-instance', (_e, argv) => {
+  if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+  openPaths(argv.slice(1).filter((a) => !a.startsWith('-') && path.isAbsolute(a)));
+});
+
+app.whenReady().then(() => {
+  library = new Library(app.getPath('userData'), app.getVersion());
+  nativeTheme.themeSource = library.data.settings.theme || 'system';
+  library.on('changed', () => send('library-changed'));
+  library.on('scan', (p) => send('scan-progress', p));
+  library.on('fetch', (p) => send('fetch-progress', p));
+  nativeTheme.on('updated', () => { if (!isMac && win) win.setTitleBarOverlay(overlayColors()); });
+
+  registerProtocol();
+  registerIpc();
+  buildMenu();
+  createWindow();
+
+  win.webContents.once('did-finish-load', () => {
+    if (library.data.settings.folders.length) library.scan();
+    const argvFiles = isMac ? [] : process.argv.slice(1).filter((a) => !a.startsWith('-') && path.isAbsolute(a) && a !== app.getAppPath());
+    openPaths([...pendingOpen.splice(0), ...argvFiles]);
+    if (process.env.CHEW_CAPTURE) captureAndQuit(process.env.CHEW_CAPTURE);
+  });
+
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on('window-all-closed', () => { if (!isMac) app.quit(); });
+app.on('before-quit', () => { library?.saveNow(); });
