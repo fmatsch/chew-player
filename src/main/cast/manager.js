@@ -9,6 +9,7 @@ import os from 'node:os';
 import { Discovery } from './discovery.js';
 import { CastServer, mimeOf } from './server.js';
 import { AirPlayDevice } from './airplay.js';
+import { decodeBplist } from './plist.js';
 import { GoogleCastDevice, DlnaDevice } from './receivers.js';
 import { videoArgs } from '../ffmpeg.js';
 
@@ -37,13 +38,39 @@ export class CastManager extends EventEmitter {
     this.getTrack = getTrack;
     this.coverUrl = coverUrl;
     this.credsFile = path.join(dataDir, 'cast-pairings.json');
+    this.manualFile = path.join(dataDir, 'cast-devices.json');
     this.discovery = new Discovery();
     this.server = new CastServer(os.tmpdir());
     this.session = null;
     this.discovery.on('changed', () => this.emit('devices', this.devices()));
   }
 
-  start() { this.discovery.start(); }
+  start() {
+    this.discovery.start();
+    for (const d of this.manualDevices()) this.discovery.add(d);
+  }
+
+  manualDevices() { try { return JSON.parse(readFileSync(this.manualFile, 'utf8')); } catch { return []; } }
+
+  // Fallback when discovery can't see a device (VLANs, mesh Wi-Fi, blocked multicast): connect by IP address.
+  async addManual({ protocol, host }) {
+    host = String(host).trim();
+    if (!/^[\w.-]+$/.test(host)) throw new Error('Please enter an IP address like 192.168.1.20');
+    let name = protocol === 'airplay' ? `Apple TV (${host})` : protocol === 'cast' ? `Google Cast (${host})` : host;
+    if (protocol === 'airplay') {
+      try {
+        const res = await fetch(`http://${host}:7000/info`, { signal: AbortSignal.timeout(4000) });
+        const info = decodeBplist(Buffer.from(await res.arrayBuffer()));
+        if (info?.name) name = info.name;
+      } catch { /* /info is optional */ }
+    }
+    const dev = { id: `${protocol}:manual:${host}`, protocol, name, host, port: protocol === 'airplay' ? 7000 : 8009, manual: true, video: true };
+    const list = this.manualDevices().filter((d) => d.id !== dev.id);
+    list.push(dev);
+    writeFileSync(this.manualFile, JSON.stringify(list));
+    this.discovery.add(dev);
+    return { id: dev.id, name };
+  }
 
   devices() {
     return this.discovery.list().map(({ id, protocol, name, model, video }) => ({ id, protocol, name, model, video: video !== false }));

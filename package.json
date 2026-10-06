@@ -1,7 +1,7 @@
 {
   "name": "chew-player",
   "productName": "Chew Player",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A simple, folder-based music and video player for macOS and Windows.",
   "author": "fmatsch",
   "license": "MIT",
@@ -40,7 +40,15 @@
         "zip"
       ],
       "identity": "-",
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "Chew Player looks for Apple TVs, Chromecasts and smart TVs on your network so you can play videos and music on them.",
+        "NSBonjourServices": [
+          "_airplay._tcp",
+          "_googlecast._tcp",
+          "_raop._tcp"
+        ]
+      }
     },
     "win": {
       "icon": "build/icon.png",

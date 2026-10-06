@@ -281,6 +281,10 @@ function registerIpc() {
   ipcMain.handle('cast:play', (_e, opts) => cast.play(opts));
   ipcMain.handle('cast:control', (_e, action, value) => cast.control(action, value));
   ipcMain.handle('cast:pair-start', (_e, id) => cast.pairStart(id));
+  ipcMain.handle('cast:add-manual', (_e, opts) => cast.addManual(opts));
+  ipcMain.handle('cast:network-settings', () => shell.openExternal(isMac
+    ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork'
+    : 'ms-settings:privacy')),
   ipcMain.handle('cast:pair-finish', (_e, id, pin) => cast.pairFinish(id, pin));
   ipcMain.handle('video:reveal', (_e, id) => { const it = videoLib.data.items[id]; if (it) shell.showItemInFolder(it.path); });
   ipcMain.handle('update:install', () => updater.install());

@@ -1290,10 +1290,13 @@ async function chooseDevice(kind) {
     }
   } else {
     items.push({ type: 'separator' }, { label: 'Looking for TVs and receivers…', enabled: false });
+    if (S.info.platform === 'darwin') items.push({ id: 'perm', label: 'No TV? Check “Local Network” Permission…' });
   }
-  items.push({ type: 'separator' }, { id: 'help', label: 'Apple TV, Android TV & Fire TV help…' });
+  items.push({ type: 'separator' }, { id: 'manual', label: 'Connect by IP Address…' }, { id: 'help', label: 'Apple TV, Android TV & Fire TV help…' });
   const choice = await chew.contextMenu(items);
   if (choice === 'help') { showCastHelp(); return null; }
+  if (choice === 'perm') { chew.cast.networkSettings(); return null; }
+  if (choice === 'manual') return manualDeviceDialog();
   return choice;
 }
 
@@ -1423,6 +1426,38 @@ function pairDialog(st) {
     if (m === 'pair') pair();
   };
   modal.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); pair(); } if (e.key === 'Escape') close(); };
+}
+
+// Resolves with the new device id (or null) so the caller can start casting right away.
+function manualDeviceDialog() {
+  return new Promise((resolve) => {
+    const modal = $('#modal');
+    modal.innerHTML = `<div class="modal">
+      <h2>Connect by IP Address</h2>
+      <div class="sub">If your TV doesn’t show up automatically, enter its IP address. You find it in the TV’s network settings (Apple TV: Settings › Network).</div>
+      <form class="form" onsubmit="return false">
+        <label>Type<select id="md-type"><option value="airplay">Apple TV (AirPlay)</option><option value="cast">Google Cast / Android TV</option></select></label>
+        <label>IP address<input id="md-host" placeholder="192.168.1.20" autocomplete="off"></label>
+      </form>
+      <div class="hint" id="md-msg" style="margin-top:10px"></div>
+      <div class="modal-actions"><div></div><div><button class="btn ghost" data-m="cancel">Cancel</button><button class="btn" data-m="add">Connect</button></div></div>
+    </div>`;
+    modal.hidden = false;
+    $('#md-host').focus();
+    const close = (v) => { modal.hidden = true; modal.innerHTML = ''; modal.onclick = modal.onkeydown = null; resolve(v); };
+    const add = async () => {
+      $('#md-msg').textContent = 'Connecting…';
+      try {
+        const d = await chew.cast.addManual({ protocol: $('#md-type').value, host: $('#md-host').value });
+        toast(`Added ${d.name}`);
+        close(d.id);
+      } catch (e) {
+        $('#md-msg').textContent = e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      }
+    };
+    modal.onclick = (e) => { const m = e.target.closest('[data-m]')?.dataset.m; if (m === 'cancel' || e.target === modal) close(null); if (m === 'add') add(); };
+    modal.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } if (e.key === 'Escape') close(null); };
+  });
 }
 
 function showCastHelp() {

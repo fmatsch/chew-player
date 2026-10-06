@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('chew', {
     control: (action, value) => ipcRenderer.invoke('cast:control', action, value),
     pairStart: (id) => ipcRenderer.invoke('cast:pair-start', id),
     pairFinish: (id, pin) => ipcRenderer.invoke('cast:pair-finish', id, pin),
+    addManual: (opts) => ipcRenderer.invoke('cast:add-manual', opts),
+    networkSettings: () => ipcRenderer.invoke('cast:network-settings'),
   },
   onCastDevices: on('cast-devices'),
   onCastStatus: on('cast-status'),
