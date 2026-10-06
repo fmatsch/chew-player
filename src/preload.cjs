@@ -9,7 +9,7 @@ const on = (channel) => (cb) => {
 contextBridge.exposeInMainWorld('chew', {
   state: () => ipcRenderer.invoke('state'),
   info: () => ipcRenderer.invoke('info'),
-  addFolder: () => ipcRenderer.invoke('folders:add'),
+  addFolder: (kind) => ipcRenderer.invoke('folders:add', kind),
   removeFolder: (dir) => ipcRenderer.invoke('folders:remove', dir),
   scan: () => ipcRenderer.invoke('scan'),
   fetchMissing: (ids) => ipcRenderer.invoke('fetch', ids),
@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld('chew', {
   markPlayed: (id) => ipcRenderer.invoke('tracks:played', id),
   rate: (ids, rating) => ipcRenderer.invoke('tracks:rate', ids, rating),
   openFolder: (dir) => ipcRenderer.invoke('folder:reveal', dir),
-  openPaths: (paths) => ipcRenderer.invoke('open-paths', paths),
+  openPaths: (paths, kind) => ipcRenderer.invoke('open-paths', paths, kind),
   pathForFile: (file) => webUtils.getPathForFile(file),
   confirm: (message, detail, okLabel) => ipcRenderer.invoke('confirm', message, detail, okLabel),
   contextMenu: (items) => ipcRenderer.invoke('context-menu', items),
@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('chew', {
   onFetchProgress: on('fetch-progress'),
   onCommand: on('command'),
   onPlayTracks: on('play-tracks'),
+  onFoldersAdded: on('folders-added'),
   onUpdateStatus: on('update-status'),
   onVideoChanged: on('video-changed'),
   cast: {

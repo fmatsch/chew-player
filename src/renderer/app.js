@@ -192,6 +192,7 @@ function trackTable(list, opts = {}) {
 
 // ---------------------------------------------------------------- views
 
+const folderName = (p) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 const toggle = (key) => `<label class="switch"><input type="checkbox" data-setting="${key}" ${S.settings[key] !== false ? 'checked' : ''}><span></span></label>`;
 
 function outputOptions() {
@@ -311,7 +312,7 @@ const VIEWS = {
         return `<div class="list-row" data-folder="${esc(r)}">${icon('folder')}<div class="name">${esc(r)}</div><div class="meta">${plural(n, 'song')}</div>${icon('chevron')}</div>`;
       }).join('');
       const list = S.tracks.filter((t) => matches(t) && !t.loose).sort((a, b) => collator.compare(a.path, b.path));
-      const d = el(`<div class="scroll">${rows}</div>`);
+      const d = el(`<div class="scroll">${rows}<div class="pad" style="padding-top:16px"><button class="btn ghost" data-act="add-folder">${icon('plus')}Add Music Folder…</button></div></div>`);
       return { title: 'Folders', subtitle: plural(roots.length, 'library folder'), list, el: d, noSearch: true };
     }
 
@@ -421,31 +422,38 @@ const VIEWS = {
   settings() {
     const f = S.settings.folders || [];
     const theme = S.settings.theme || 'system';
-    const d = el(`<div class="scroll"><div class="pad settings">
-      <h3>Music folders</h3>
+    // The side you're on (music or video) comes first.
+    const musicFolders = `      <h3>Music folders</h3>
       <div class="box">
-        ${f.map((p) => `<div class="box-row">${icon('folder')}<div class="grow"><div class="path" title="${esc(p)}">${esc(p)}</div>
-          <div class="hint">${plural(S.tracks.filter((t) => t.root === p).length, 'song')}</div></div>
+        ${f.map((p) => `<div class="box-row">${icon('folder')}<div class="grow"><div class="folder-name">${esc(folderName(p))} <span class="hint">· ${plural(S.tracks.filter((t) => t.root === p).length, 'song')}</span></div>
+          <div class="path" title="${esc(p)}">${esc(p)}</div></div>
           <button class="btn ghost" data-act="reveal-folder" data-path="${esc(p)}">Show</button>
+          <button class="btn ghost" data-act="move-folder" data-to="video" data-path="${esc(p)}" title="This folder holds videos">Move to Video</button>
           <button class="btn danger" data-act="remove-folder" data-path="${esc(p)}">Remove</button></div>`).join('')}
         <div class="box-row"><div class="grow"><div>Watch folders for changes</div>
           <div class="hint">New, changed and deleted files are picked up automatically, without a manual rescan.</div></div>
           ${toggle('watchFolders')}</div>
         <div class="box-row"><div class="grow hint">Chew Player never moves, renames or rewrites your files. Edits are stored in its own library.</div>
           <button class="btn ghost" data-act="rescan">Rescan</button>
-          <button class="btn" data-act="add-folder">${icon('plus')}Add Folder…</button></div>
+          <button class="btn" data-act="add-folder">${icon('plus')}Add Music Folder…</button></div>
       </div>
 
-      <h3>Video folders</h3>
+`;
+    const videoFolders = `      <h3>Video folders</h3>
       <div class="box">
-        ${video.folders().map((p) => `<div class="box-row">${icon('film')}<div class="grow"><div class="path" title="${esc(p)}">${esc(p)}</div>
-          <div class="hint">${plural(video.items().filter((i) => i.root === p).length, 'video')}</div></div>
+        ${video.folders().map((p) => `<div class="box-row">${icon('film')}<div class="grow"><div class="folder-name">${esc(folderName(p))} <span class="hint">· ${plural(video.items().filter((i) => i.root === p).length, 'video')}</span></div>
+          <div class="path" title="${esc(p)}">${esc(p)}</div></div>
           <button class="btn ghost" data-act="reveal-folder" data-path="${esc(p)}">Show</button>
+          <button class="btn ghost" data-act="move-folder" data-to="audio" data-path="${esc(p)}" title="This folder holds music">Move to Music</button>
           <button class="btn danger" data-act="remove-video-folder" data-path="${esc(p)}">Remove</button></div>`).join('')}
         <div class="box-row"><div class="grow hint">Movies and TV episodes are recognised from file and folder names. Posters and descriptions come from Wikipedia/Wikidata and TVMaze.</div>
           <button class="btn ghost" data-act="rescan-video">Rescan</button>
-          <button class="btn" data-act="add-video-folder">${icon('plus')}Add Folder…</button></div>
+          <button class="btn" data-act="add-video-folder">${icon('plus')}Add Video Folder…</button></div>
       </div>
+
+`;
+    const d = el(`<div class="scroll"><div class="pad settings">
+      ${S.mode === 'video' ? `${videoFolders}${musicFolders}` : `${musicFolders}${videoFolders}`}
 
       <h3>Online information</h3>
       <div class="box">
@@ -968,7 +976,7 @@ document.addEventListener('click', async (e) => {
   if (!act) return;
   const list = S.current?.list || [];
   switch (act.dataset.act) {
-    case 'add-folder': chew.addFolder(); break;
+    case 'add-folder': addFolder('audio'); break;
     case 'remove-folder':
       if (await chew.confirm('Remove this folder from the library?', `${act.dataset.path}\n\nThe files on disk are not touched.`, 'Remove')) {
         await chew.removeFolder(act.dataset.path);
@@ -988,7 +996,14 @@ document.addEventListener('click', async (e) => {
     case 'play': playFrom(list, 0); break;
     case 'shuffle': playFrom(list, 0, true); break;
     case 'vplay-list': video.play(list, 0); break;
-    case 'add-video-folder': chew.video.addFolder(); break;
+    case 'add-video-folder': addFolder('video'); break;
+    case 'move-folder': {
+      const to = act.dataset.to;
+      const dir = act.dataset.path;
+      if (to === 'video') await chew.removeFolder(dir); else await chew.video.removeFolder(dir);
+      reportFolders(await chew.openPaths([dir], to));
+      break;
+    }
     case 'remove-video-folder':
       if (await chew.confirm('Remove this video folder from the library?', `${act.dataset.path}\n\nThe files on disk are not touched.`, 'Remove')) await chew.video.removeFolder(act.dataset.path);
       break;
@@ -1141,7 +1156,7 @@ window.addEventListener('drop', (e) => {
   dragDepth = 0;
   $('#drop-overlay').hidden = true;
   const paths = [...e.dataTransfer.files].map((f) => chew.pathForFile(f)).filter(Boolean);
-  if (paths.length) chew.openPaths(paths);
+  if (paths.length) chew.openPaths(paths, S.mode).then(reportFolders);
 });
 
 chew.onCommand(async (cmd) => {
@@ -1153,6 +1168,7 @@ chew.onCommand(async (cmd) => {
   else if (cmd === 'shuffle') $('#btn-shuffle').click();
   else if (cmd === 'repeat') $('#btn-repeat').click();
   else if (cmd === 'find') { if (S.current?.noSearch) go('songs'); search.focus(); search.select(); }
+  else if (cmd === 'add-folder') addFolder(S.mode);
   else if (cmd === 'new-playlist') newPlaylist();
   else if (cmd.startsWith('show-playlist:')) { await loadState(); go('playlist', cmd.slice(14)); }
 });
@@ -1269,6 +1285,22 @@ function setUpdate(st) {
 }
 chew.onUpdateStatus(setUpdate);
 $('#update-btn').addEventListener('click', () => chew.updates.install());
+
+// ---------------------------------------------------------------- adding folders
+
+async function addFolder(kind) {
+  reportFolders(await (kind === 'video' ? chew.video.addFolder() : chew.addFolder('audio')));
+}
+
+function reportFolders(r) {
+  if (!r) return;
+  const lib = r.kind === 'video' ? 'video' : 'music';
+  const name = (p) => p.split(/[\\/]/).filter(Boolean).pop();
+  if (r.added.length) toast(r.added.length === 1 ? `Added “${name(r.added[0])}” to your ${lib} library` : `Added ${r.added.length} folders to your ${lib} library`);
+  for (const p of r.covered) toast(`“${name(p)}” is already included through a parent folder`);
+  for (const p of r.exists) toast(`“${name(p)}” is already in your ${lib} library`);
+}
+chew.onFoldersAdded(reportFolders);
 
 // ---------------------------------------------------------------- casting
 

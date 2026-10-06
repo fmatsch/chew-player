@@ -165,27 +165,38 @@ function createWindow() {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
 }
 
-async function openPaths(paths) {
+// Folders go to the library of the side the user is on (music or video).
+function addFolders(dirs, kind) {
+  const lib = kind === 'video' ? videoLib : library;
+  const report = { kind, added: [], exists: [], covered: [] };
+  for (const dir of dirs) report[lib.addFolder(dir)].push(dir);
+  if (report.added.length) lib.scan();
+  return report;
+}
+
+async function openPaths(paths, kind = 'audio') {
   const ids = [];
-  let added = false;
+  const dirs = [];
   for (const p of paths) {
     try {
       const st = await fs.stat(p);
-      if (st.isDirectory()) added = library.addFolder(p) || added;
+      if (st.isDirectory()) dirs.push(p);
       else if (isAudioFile(p)) ids.push((await library.addLoose(p)).id);
     } catch { /* ignore */ }
   }
-  if (added) library.scan();
+  const report = dirs.length ? addFolders(dirs, kind) : null;
   if (ids.length) send('play-tracks', ids);
+  return report;
 }
 
-async function chooseFolder() {
-  const r = await dialog.showOpenDialog(win, { title: 'Add Music Folder', properties: ['openDirectory', 'multiSelections', 'createDirectory'] });
-  if (r.canceled) return false;
-  let added = false;
-  for (const dir of r.filePaths) added = library.addFolder(dir) || added;
-  if (added) library.scan();
-  return added;
+async function chooseFolder(kind = 'audio') {
+  const r = await dialog.showOpenDialog(win, {
+    title: kind === 'video' ? 'Add Video Folder' : 'Add Music Folder',
+    buttonLabel: 'Add',
+    properties: ['openDirectory', 'multiSelections', 'createDirectory'],
+  });
+  if (r.canceled) return null;
+  return addFolders(r.filePaths, kind);
 }
 
 async function importPlaylist() {
@@ -203,7 +214,9 @@ function buildMenu() {
     {
       label: 'File',
       submenu: [
-        { label: 'Add Music Folder…', accelerator: 'CmdOrCtrl+O', click: () => chooseFolder() },
+        { label: 'Add Folder…', accelerator: 'CmdOrCtrl+O', click: cmd('add-folder') },
+        { label: 'Add Music Folder…', click: () => chooseFolder('audio').then((r) => send('folders-added', r)) },
+        { label: 'Add Video Folder…', click: () => chooseFolder('video').then((r) => send('folders-added', r)) },
         { label: 'Rescan Library', accelerator: 'CmdOrCtrl+R', click: () => library.scan() },
         { label: 'Fetch Missing Info Online', click: () => library.fetchMissing() },
         { type: 'separator' },
@@ -240,7 +253,7 @@ function buildMenu() {
 function registerIpc() {
   ipcMain.handle('state', () => library.state());
   ipcMain.handle('info', () => ({ version: app.getVersion(), platform: process.platform, ffmpeg: !!ffmpegPath() }));
-  ipcMain.handle('folders:add', () => chooseFolder());
+  ipcMain.handle('folders:add', (_e, kind) => chooseFolder(kind || 'audio'));
   ipcMain.handle('folders:remove', (_e, dir) => library.removeFolder(dir));
   ipcMain.handle('scan', () => { library.scan(); });
   ipcMain.handle('fetch', (_e, ids) => { library.fetchMissing(ids || null).catch(() => {}); });
@@ -262,14 +275,7 @@ function registerIpc() {
 
   // ---- video library
   ipcMain.handle('video:state', () => videoLib.state());
-  ipcMain.handle('video:folders:add', async () => {
-    const r = await dialog.showOpenDialog(win, { title: 'Add Video Folder', properties: ['openDirectory', 'multiSelections', 'createDirectory'] });
-    if (r.canceled) return false;
-    let added = false;
-    for (const dir of r.filePaths) added = videoLib.addFolder(dir) || added;
-    if (added) videoLib.scan();
-    return added;
-  });
+  ipcMain.handle('video:folders:add', () => chooseFolder('video'));
   ipcMain.handle('video:folders:remove', (_e, dir) => videoLib.removeFolder(dir));
   ipcMain.handle('video:scan', () => { videoLib.scan(); });
   ipcMain.handle('video:fetch', (_e, ids) => { videoLib.fetchMissing(ids || null).catch(() => {}); });
@@ -292,7 +298,7 @@ function registerIpc() {
   ipcMain.handle('tracks:edit', (_e, ids, edits) => library.editTracks(ids, edits));
   ipcMain.handle('tracks:reveal', (_e, id) => { const t = library.data.tracks[id]; if (t) shell.showItemInFolder(t.path); });
   ipcMain.handle('folder:reveal', (_e, dir) => shell.openPath(dir));
-  ipcMain.handle('open-paths', (_e, paths) => openPaths(paths));
+  ipcMain.handle('open-paths', (_e, paths, kind) => openPaths(paths, kind));
   ipcMain.handle('playlist:create', (_e, name, ids, extra) => library.createPlaylist(name, ids, extra));
   ipcMain.handle('tracks:played', (_e, id) => library.markPlayed(id));
   ipcMain.handle('tracks:rate', (_e, ids, rating) => library.rateTracks(ids, rating));

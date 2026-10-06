@@ -6,6 +6,7 @@ import path from 'node:path';
 import { VIDEO_EXTENSIONS, SUBTITLE_EXTENSIONS, probeVideo, videoPlayback, guessVideo, grabFrame, langName } from './video-probe.js';
 import { IMAGE_EXTENSIONS, extOf } from './formats.js';
 import * as online from './video-online.js';
+import { mergeFolder } from './folders.js';
 
 const normPath = (p) => {
   const r = path.resolve(p);
@@ -121,11 +122,12 @@ export class VideoLibrary extends EventEmitter {
   // ---------------------------------------------------------------- folders
 
   addFolder(dir) {
-    if (this.data.folders.some((f) => normPath(f) === normPath(dir))) return false;
-    this.data.folders.push(dir);
+    const { result, list } = mergeFolder(this.data.folders, dir);
+    if (result !== 'added') return result;
+    this.data.folders = list;
     this.changed(true);
     this.watch();
-    return true;
+    return result;
   }
 
   removeFolder(dir) {

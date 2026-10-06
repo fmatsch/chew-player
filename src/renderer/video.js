@@ -235,7 +235,7 @@ export function initVideo(app) {
       const lc = (p) => (S.info.platform === 'win32' ? p.toLowerCase() : p);
       if (!dir) {
         const rows = V.folders.map((r) => `<div class="list-row" data-vfolder="${esc(r)}">${icon('folder')}<div class="name">${esc(r)}</div><div class="meta">${plural(V.items.filter((i) => lc(i.path).startsWith(lc(r) + sep)).length, 'video')}</div>${icon('chevron')}</div>`).join('');
-        return { title: 'Folders', subtitle: plural(V.folders.length, 'video folder'), el: el(`<div class="scroll">${rows}</div>`), noSearch: true };
+        return { title: 'Folders', subtitle: plural(V.folders.length, 'video folder'), el: el(`<div class="scroll">${rows}<div class="pad" style="padding-top:16px"><button class="btn ghost" data-act="add-video-folder">${icon('plus')}Add Video Folder…</button></div></div>`), noSearch: true };
       }
       const prefix = lc(dir) + sep;
       const subs = new Map();

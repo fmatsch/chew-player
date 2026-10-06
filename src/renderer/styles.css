@@ -516,3 +516,6 @@ body.mode-video .nav-group[data-for="audio"] { display: none; }
 .help p { margin: 0; color: var(--muted); line-height: 1.5; user-select: text; }
 .help p.hint { margin-top: 18px; font-size: 12px; }
 #btn-cast.on { color: var(--accent); }
+
+.folder-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.box-row .path { color: var(--muted); }

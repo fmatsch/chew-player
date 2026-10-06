@@ -7,6 +7,7 @@ import { parseFile, selectCover } from 'music-metadata';
 import { isAudioFile, extOf, IMAGE_EXTENSIONS, playbackMode } from './formats.js';
 import { probeDuration } from './ffmpeg.js';
 import * as online from './online.js';
+import { mergeFolder } from './folders.js';
 
 // v2: tracks carry ReplayGain values, so files scanned by v1 are read again once.
 const DB_VERSION = 2;
@@ -194,13 +195,14 @@ export class Library extends EventEmitter {
 
   // ---------- folders & scanning ----------
 
+  // Returns 'added', 'exists' or 'covered' (inside a folder that's already in the library).
   addFolder(dir) {
-    const folders = this.data.settings.folders;
-    if (folders.some((f) => normPath(f) === normPath(dir))) return false;
-    folders.push(dir);
+    const { result, list } = mergeFolder(this.data.settings.folders, dir);
+    if (result !== 'added') return result;
+    this.data.settings.folders = list;
     this.changed();
     this.watch();
-    return true;
+    return result;
   }
 
   removeFolder(dir) {
