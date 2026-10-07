@@ -14,6 +14,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { ffmpegPath } from '../ffmpeg.js';
+import { log } from '../log.js';
 
 const TYPES = {
   mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska', webm: 'video/webm', avi: 'video/x-msvideo',
@@ -91,6 +92,7 @@ export class CastServer {
       if (session.done) break;
     }
     this.stopSession(sid);
+    log('server', 'HLS failed', err.trim().split('\n').slice(-3).join(' | '));
     throw new Error(`Couldn't prepare the stream${err ? `: ${err.trim().split('\n').pop()}` : ''}`);
   }
 
@@ -113,6 +115,7 @@ export class CastServer {
   stopAll() { for (const sid of [...this.sessions.keys()]) this.stopSession(sid); }
 
   async handle(req, res) {
+    res.on('finish', () => log('server', `${req.socket.remoteAddress} ${req.method} ${req.url.replace(this.token, '<token>')} → ${res.statusCode}${req.headers.range ? ` (${req.headers.range})` : ''}`));
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
     const parts = decodeURIComponent(new URL(req.url, 'http://x').pathname).split('/').filter(Boolean);
     if (parts[0] !== this.token) { res.writeHead(404); res.end(); return; }

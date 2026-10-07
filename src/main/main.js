@@ -9,6 +9,7 @@ import { extOf, isAudioFile } from './formats.js';
 import { transcodeStream, ffmpegPath, videoStream, subtitleStream } from './ffmpeg.js';
 import { VideoLibrary } from './video-library.js';
 import { CastManager } from './cast/manager.js';
+import { initLog, log } from './log.js';
 import { Updater } from './updater.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -19,7 +20,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 // A failing stream or network call must never freeze the whole app behind an error dialog.
-process.on('uncaughtException', (err) => console.error('[chew] uncaught:', err));
+process.on('uncaughtException', (err) => { console.error('[chew] uncaught:', err); log('error', err?.stack || String(err)); });
 process.on('unhandledRejection', (err) => console.error('[chew] unhandled rejection:', err));
 
 // Development helpers: isolated profile and scripted screenshots (see README → Development).
@@ -366,6 +367,8 @@ app.on('second-instance', (_e, argv) => {
 });
 
 app.whenReady().then(() => {
+  initLog(app.getPath('userData'));
+  log('app', `Chew Player ${app.getVersion()} on ${process.platform} ${process.arch}`);
   library = new Library(app.getPath('userData'), app.getVersion());
   nativeTheme.themeSource = library.data.settings.theme || 'system';
   library.on('changed', () => send('library-changed'));

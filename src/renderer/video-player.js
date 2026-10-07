@@ -81,6 +81,20 @@ export class VideoPlayer {
     this.renderControls();
   }
 
+  // Hide the big view but keep playing on the TV (casting); attach() brings it back.
+  detach() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    this.stage.hidden = true;
+    document.body.classList.remove('video-open');
+  }
+
+  attach() {
+    if (!this.item) return;
+    this.stage.hidden = false;
+    document.body.classList.add('video-open');
+    this.renderControls();
+  }
+
   close() {
     if (!this.item) return;
     this.saveProgress();

@@ -13,6 +13,8 @@ import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { encodeBplist, decodeBplist } from './plist.js';
 import { seal, open as openSealed } from './chacha.js';
+import { log } from '../log.js';
+import os from 'node:os';
 
 const require = createRequire(import.meta.url);
 const { SRP, SrpClient } = require('fast-srp-hap');
@@ -294,31 +296,50 @@ export class AirPlayDevice {
     c.enableEncryption(shared);
   }
 
-  async play(url, startSeconds = 0, durationHint = 0) {
+  // The /play request mirrors what iOS sends; tvOS is picky about some of these fields.
+  async play(url, startSeconds = 0) {
+    const mac = Object.values(os.networkInterfaces()).flat().find((i) => i && !i.internal && i.mac && i.mac !== '00:00:00:00:00:00')?.mac || '00:00:00:00:00:00';
     const body = encodeBplist({
       'Content-Location': url,
-      'Start-Position-Seconds': startSeconds,
+      'Start-Position-Seconds': Number(startSeconds) || 0,
       uuid: crypto.randomUUID().toUpperCase(),
       streamType: 1,
       mediaType: 'file',
-      volume: 1.0,
-      rate: 1.0,
       mightSupportStorePastisKeys: true,
       playbackRestrictions: 0,
-      clientProcName: 'Chew Player',
-      clientBundleID: 'io.github.fmatsch.chewplayer',
-      model: 'Mac',
-      SenderMACAddress: '00:00:00:00:00:00',
-      ...(durationHint ? { duration: durationHint } : {}),
+      referenceRestrictions: 3,
+      secureConnectionMs: 22,
+      infoMs: 122,
+      connectMs: 18,
+      authMs: 0,
+      bonjourMs: 0,
+      postAuthMs: 0,
+      volume: 1.0,
+      rate: 1.0,
+      SenderMACAddress: mac.toUpperCase(),
+      model: 'iPhone10,6',
+      osBuildVersion: '18B92',
+      clientBundleID: 'com.apple.mobileslideshow',
+      clientProcName: 'com.apple.mobileslideshow',
     });
-    const r = await this.conn.request('POST', '/play', { headers: { 'Content-Type': 'application/x-apple-binary-plist' }, body, timeout: 20000 });
-    if (r.status >= 300) throw new Error(`Apple TV refused to play (${r.status})`);
+    const headers = { 'Content-Type': 'application/x-apple-binary-plist', 'X-Apple-ProtocolVersion': '1', 'X-Apple-Stream-ID': '1' };
+    for (let attempt = 1; ; attempt++) {
+      const r = await this.conn.request('POST', '/play', { headers, body, timeout: 20000 });
+      log('airplay', `/play → HTTP ${r.status}`, r.body.length ? r.body.toString('utf8').slice(0, 200) : '');
+      // tvOS sometimes answers 500 to the first attempt; iOS simply retries.
+      if (r.status === 500 && attempt < 3) { await new Promise((res) => setTimeout(res, 1000)); continue; }
+      if (r.status >= 300) throw new Error(`Apple TV refused to play (HTTP ${r.status})`);
+      return;
+    }
   }
 
   async status() {
     const r = await this.conn.request('GET', '/playback-info');
-    if (r.status !== 200 || !r.body.length) return { position: 0, duration: 0, rate: 0, ready: false };
+    if (r.status !== 200 || !r.body.length) { log('airplay', `/playback-info → HTTP ${r.status}, empty`); return { position: 0, duration: 0, rate: 0, ready: false }; }
     const info = decodeBplist(r.body);
+    // Log only when something other than the position changes.
+    const brief = { duration: info.duration, rate: info.rate, readyToPlay: info.readyToPlay, bufferEmpty: info.playbackBufferEmpty, error: info.error ?? info.errorCode };
+    if (JSON.stringify(brief) !== this.lastInfo) { this.lastInfo = JSON.stringify(brief); log('airplay', `playback-info at ${Math.round(info.position || 0)}s`, brief); }
     return {
       position: info.position || 0,
       duration: info.duration || 0,

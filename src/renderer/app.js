@@ -811,9 +811,9 @@ function renderNowPlaying() {
 }
 
 function renderTime() {
-  const remote = castingAudio();
+  const remote = casting();
   const cur = remote ? cast.status.position : player.currentTime;
-  const dur = remote ? cast.status.duration || player.duration : player.duration;
+  const dur = remote ? cast.status.duration || (castingVideo() ? video.player.duration : player.duration) : player.duration;
   $('#time-cur').textContent = fmtTime(cur);
   $('#time-dur').textContent = fmtTime(dur);
   if (!seeking) {
@@ -860,7 +860,7 @@ seek.addEventListener('input', () => {
   $('#time-cur').textContent = fmtTime((seek.value / 1000) * player.duration);
 });
 seek.addEventListener('change', () => {
-  if (castingAudio()) { chew.cast.control('seek', (seek.value / 1000) * (cast.status.duration || player.duration)); seeking = false; return; }
+  if (casting()) { chew.cast.control('seek', (seek.value / 1000) * (cast.status.duration || (castingVideo() ? video.player.duration : player.duration))); seeking = false; return; }
   player.seek((seek.value / 1000) * player.duration);
   seeking = false;
 });
@@ -869,16 +869,16 @@ let lastVolume = 0.8;
 $('#btn-mute').addEventListener('click', () => {
   if (player.volume > 0) { lastVolume = player.volume; setVolume(0); } else setVolume(lastVolume || 0.8);
 });
-$('#btn-play').addEventListener('click', () => (castingAudio() ? chew.cast.control(cast.status.state === 'playing' ? 'pause' : 'play') : player.toggle()));
-$('#btn-next').addEventListener('click', () => (castingAudio() ? castMusicStep(1) : player.next()));
-$('#btn-prev').addEventListener('click', () => (castingAudio() ? (cast.status.position > 3 ? chew.cast.control('seek', 0) : castMusicStep(-1)) : player.prev()));
+$('#btn-play').addEventListener('click', () => (casting() ? chew.cast.control(cast.status.state === 'playing' ? 'pause' : 'play') : player.toggle()));
+$('#btn-next').addEventListener('click', () => (castingVideo() ? video.player.next() : castingAudio() ? castMusicStep(1) : player.next()));
+$('#btn-prev').addEventListener('click', () => (castingVideo() ? chew.cast.control('seek', Math.max(0, cast.status.position - 30)) : castingAudio() ? (cast.status.position > 3 ? chew.cast.control('seek', 0) : castMusicStep(-1)) : player.prev()));
 $('#btn-shuffle').addEventListener('click', () => { player.setShuffle(!player.shuffle); syncToggles(); chew.setSetting('shuffle', player.shuffle); });
 $('#btn-repeat').addEventListener('click', () => {
   player.setRepeat({ off: 'all', all: 'one', one: 'off' }[player.repeat]);
   syncToggles();
   chew.setSetting('repeat', player.repeat);
 });
-$('.now').addEventListener('click', () => { if (player.track) go('queue'); });
+$('.now').addEventListener('click', () => { if (castingVideo()) video.player.attach(); else if (player.track) go('queue'); });
 
 if ('mediaSession' in navigator) {
   const ms = navigator.mediaSession;
@@ -1307,6 +1307,8 @@ chew.onFoldersAdded(reportFolders);
 const PROTOCOLS = { airplay: 'AirPlay', cast: 'Google Cast', dlna: 'DLNA' };
 const cast = { status: { active: false }, deviceId: null };
 const castingAudio = () => cast.status.active && cast.status.kind === 'audio';
+const castingVideo = () => cast.status.active && cast.status.kind === 'video';
+const casting = () => cast.status.active;
 
 async function chooseDevice(kind) {
   const devices = (await chew.cast.devices()).filter((d) => kind === 'audio' || d.video);
@@ -1351,6 +1353,7 @@ async function castMusicStep(dir, auto = false) {
 }
 
 $('#btn-cast').addEventListener('click', async () => {
+  if (castingVideo()) { castVideo('menu'); return; }
   const choice = await chooseDevice('audio');
   if (!choice) return;
   if (choice === 'local') {
@@ -1375,7 +1378,9 @@ async function castVideo(action, arg) {
       const at = cast.status.position || vp.time;
       await chew.cast.control('stop');
       vp.setRemote(null);
+      vp.attach();
       vp.load(vp.item.playback === 'native' ? 'native' : vp.item.playback, at, true);
+      renderRemote();
       return;
     }
     cast.deviceId = choice;
@@ -1401,23 +1406,39 @@ chew.onCastStatus((st) => {
   const vp = video.player;
   if (st.active && st.kind === 'video') {
     if (vp.item) vp.setRemote(st);
-    if (st.state === 'ended') { if (vp.index < vp.queue.length - 1) vp.next(); else { chew.cast.control('stop'); vp.remote = null; vp.close(); } }
+    // Once the TV has it, go back to the library; the player bar becomes the remote control.
+    if (!prev.active && vp.item) vp.detach();
+    if (st.state === 'ended' && prev.state !== 'ended') {
+      if (vp.index < vp.queue.length - 1) vp.next();
+      else { chew.cast.control('stop'); vp.remote = null; vp.close(); }
+    }
   } else if (vp.remote && !st.active) {
     vp.setRemote(null);
+    if (vp.stage.hidden) vp.close(); // casting ended while browsing the library
   }
-  if (st.active && st.kind === 'audio') {
-    if (st.state === 'ended' && prev.state !== 'ended') castMusicStep(1, true);
-    renderCastMusic();
-  } else if (prev.active && prev.kind === 'audio') {
-    renderCastMusic();
-  }
+  if (st.active && st.kind === 'audio' && st.state === 'ended' && prev.state !== 'ended') castMusicStep(1, true);
+  if (st.active || prev.active) renderRemote();
 });
 
-function renderCastMusic() {
-  const on = castingAudio();
-  $('#btn-cast').classList.toggle('on', on);
-  $('#btn-cast').style.color = on ? 'var(--accent)' : '';
-  if (on) {
+// The player bar shows whatever is playing on the TV (music or video) and controls it.
+function renderRemote() {
+  const on = casting();
+  const btn = $('#btn-cast');
+  btn.classList.toggle('on', on);
+  btn.style.color = on ? 'var(--accent)' : '';
+  document.body.classList.toggle('remote-video', castingVideo());
+  if (castingVideo() && video.player.item) {
+    const it = video.player.item;
+    $('#now-title').textContent = it.type === 'episode' ? `${it.show} · S${it.season}E${String(it.episode).padStart(2, '0')} · ${it.title}` : it.title;
+    $('#now-artist').textContent = cast.status.state === 'connecting' ? `Connecting to ${cast.status.deviceName}…` : `Playing on ${cast.status.deviceName}`;
+    const art = it.poster || it.still;
+    const c = $('#now-cover');
+    c.className = `now-cover cover${art ? '' : ' empty'}`;
+    c.style.backgroundImage = art ? `url('${coverUrl(art)}')` : '';
+    $('#now-tech').textContent = `▶ ${cast.status.deviceName}`;
+    setIcon($('#btn-play'), ['playing', 'buffering', 'connecting'].includes(cast.status.state) ? 'pause' : 'play');
+  } else if (castingAudio()) {
+    renderNowPlaying();
     $('#now-tech').textContent = `▶ ${cast.status.deviceName}`;
     setIcon($('#btn-play'), cast.status.state === 'playing' || cast.status.state === 'buffering' ? 'pause' : 'play');
   } else {

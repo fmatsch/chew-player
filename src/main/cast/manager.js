@@ -12,6 +12,7 @@ import { AirPlayDevice } from './airplay.js';
 import { decodeBplist } from './plist.js';
 import { GoogleCastDevice, DlnaDevice } from './receivers.js';
 import { videoArgs } from '../ffmpeg.js';
+import { log } from '../log.js';
 
 const ext = (p) => path.extname(p).slice(1).toLowerCase();
 
@@ -117,11 +118,13 @@ export class CastManager extends EventEmitter {
       }
       const media = await this.prepare(device, kind, item, start, audio, subtitle);
       this.session.offset = media.offset;
+      log('cast', `play on ${device.name} (${device.protocol} ${device.host})`, { kind, file: path.basename(item.path), codec: item.vcodec || item.codec, stream: media.hls ? 'hls' : media.contentType === 'video/mp2t' ? 'ts' : 'direct', url: media.url.replace(/\/[0-9a-f]{24}\//, '/<token>/'), start });
       await client.load(media);
       this.session.state = 'buffering';
       this.status();
       this.startPolling();
     } catch (e) {
+      log('cast', `failed on ${device.name}: ${e.message}`);
       if (e.needsPin) {
         this.session?.client?.close(); // don't leave a half-open connection that could block pairing
         this.session = null;
@@ -197,6 +200,7 @@ export class CastManager extends EventEmitter {
         if (st.state === 'playing') s.played = true;
         // Some receivers report "idle" once a file ends; treat that as the end once it has played.
         const ended = st.state === 'ended' || (st.state === 'idle' && s.played);
+        if (st.state !== s.lastLogged) { s.lastLogged = st.state; log('cast', `${s.device.name}: ${st.state} at ${Math.round(st.position)}s`); }
         s.state = ended ? 'ended' : st.state;
         s.failures = 0;
         this.status();
