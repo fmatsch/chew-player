@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu, nativeTheme, session } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, protocol, shell, Menu, nativeTheme, session, powerSaveBlocker } from 'electron';
 import { createReadStream, readFileSync, writeFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -388,7 +388,13 @@ app.whenReady().then(() => {
     getTrack: (id) => (library.data.tracks[id] ? library.view(library.data.tracks[id]) : null),
   });
   cast.on('devices', (list) => send('cast-devices', list));
-  cast.on('status', (st) => send('cast-status', st));
+  // While something plays on a TV, this process may be serving the media — keep macOS from napping it.
+  let castBlocker = null;
+  cast.on('status', (st) => {
+    send('cast-status', st);
+    if (st.active && castBlocker === null) castBlocker = powerSaveBlocker.start('prevent-app-suspension');
+    else if (!st.active && castBlocker !== null) { powerSaveBlocker.stop(castBlocker); castBlocker = null; }
+  });
   cast.start();
   loadSession();
   updater = new Updater({ send: (status) => send('update-status', status), enabled: () => library.data.settings.autoUpdate !== false });

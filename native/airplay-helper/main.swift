@@ -29,6 +29,8 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var started = false
     var nowPlaying: [String: Any] = [:]
     var fallbackURL: URL?
+    var activity: NSObjectProtocol?
+    let playerView = AVPlayerView()
     var beganAt: Date?
     var everPlayed = false
     var observers: [NSKeyValueObservation] = []
@@ -37,7 +39,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         player.allowsExternalPlayback = true
 
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 190))
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 300))
         titleLabel.font = .boldSystemFont(ofSize: 15)
         titleLabel.lineBreakMode = .byTruncatingTail
         hintLabel.textColor = .secondaryLabelColor
@@ -48,7 +50,14 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         picker.setRoutePickerButtonColor(NSColor(red: 1, green: 0.31, blue: 0.48, alpha: 1), for: .normal)
         picker.setRoutePickerButtonColor(NSColor(red: 1, green: 0.31, blue: 0.48, alpha: 1), for: .active)
         let button = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        let stack = NSStackView(views: [picker, titleLabel, hintLabel, button])
+        // A real video output, like QuickTime's player view. Without one, macOS may choose a different
+        // (worse) way to send the video to the TV.
+        playerView.player = player
+        playerView.controlsStyle = .none
+        playerView.translatesAutoresizingMaskIntoConstraints = false
+        playerView.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        playerView.heightAnchor.constraint(equalToConstant: 90).isActive = true
+        let stack = NSStackView(views: [playerView, picker, titleLabel, hintLabel, button])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 10
@@ -117,6 +126,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         case "pick": showPicker()
         case "stop":
+            keepAwake(false)
             player.pause()
             player.replaceCurrentItem(with: nil)
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -158,6 +168,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func begin() {
         guard !started, player.currentItem != nil else { return }
         started = true
+        keepAwake(true)
         beganAt = Date()
         everPlayed = false
         window.orderOut(nil)
@@ -213,6 +224,19 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return .success
         }
         c.nextTrackCommand.addTarget { _ in emit(["ev": "next"]); return .success }
+    }
+
+    // The helper has no visible window while the TV plays, so macOS would put it into App Nap and
+    // throttle it — but it is the process feeding the video to the TV. Declare it latency-critical.
+    func keepAwake(_ on: Bool) {
+        if on, activity == nil {
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
+                reason: "Playing video on an AirPlay device")
+        } else if !on, let a = activity {
+            ProcessInfo.processInfo.endActivity(a)
+            activity = nil
+        }
     }
 
     func report() {
