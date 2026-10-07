@@ -74,13 +74,21 @@ export class CastManager extends EventEmitter {
   }
 
   devices() {
-    return this.discovery.list().map(({ id, protocol, name, model, video }) => ({ id, protocol, name, model, video: video !== false }));
+    // Hide a manually added TV once Bonjour finds the same one.
+    const found = new Set(this.discovery.list().filter((d) => !d.manual).map((d) => `${d.protocol}:${d.host}`));
+    return this.discovery.list().filter((d) => !d.manual || !found.has(`${d.protocol}:${d.host}`)).map(({ id, protocol, name, model, video }) => ({ id, protocol, name, model, video: video !== false }));
   }
 
   refresh() { this.discovery.refresh(); }
 
   creds() { try { return JSON.parse(readFileSync(this.credsFile, 'utf8')); } catch { return {}; } }
   saveCreds(id, c) { const all = this.creds(); all[id] = c; writeFileSync(this.credsFile, JSON.stringify(all)); }
+
+  // A pairing belongs to the TV, not to how we found it (Bonjour or "Connect by IP").
+  credsFor(device, suffix = '') {
+    const all = this.creds();
+    return all[`${device.id}${suffix}`] ?? all[`host:${device.host}${suffix}`];
+  }
 
   status(extra = {}) {
     const s = this.session;
@@ -140,10 +148,10 @@ export class CastManager extends EventEmitter {
 
   connect(device) {
     if (device.protocol === 'airplay') {
-      return new AirPlayClient(device, this.creds()[device.id], {
+      return new AirPlayClient(device, this.credsFor(device), {
         server: this.server,
-        preferred: this.creds()[`${device.id}#play`] ?? 0,
-        remember: (v) => this.saveCreds(`${device.id}#play`, v),
+        preferred: this.credsFor(device, '#play') ?? 0,
+        remember: (v) => { this.saveCreds(`${device.id}#play`, v); this.saveCreds(`host:${device.host}#play`, v); },
       });
     }
     if (device.protocol === 'cast') return new GoogleCastDevice(device);
@@ -270,6 +278,8 @@ export class CastManager extends EventEmitter {
   async pairFinish(deviceId, pin) {
     const creds = await this.pairing.finishPinPairing(pin);
     this.saveCreds(deviceId, creds);
+    const device = this.discovery.devices.get(deviceId);
+    if (device) this.saveCreds(`host:${device.host}`, creds);
     this.pairing = null;
   }
 

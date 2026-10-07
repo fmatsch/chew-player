@@ -132,12 +132,15 @@ class Connection {
   }
 
   // Parse complete HTTP responses out of the plaintext buffer.
+  // Parses responses to our requests and — on the reverse/event channel — requests from the TV.
   pump() {
-    while (this.waiters.length) {
+    for (;;) {
       const end = this.plain.indexOf('\r\n\r\n');
       if (end < 0) return;
       const head = this.plain.subarray(0, end).toString();
       const lines = head.split('\r\n');
+      const isRequest = !lines[0].startsWith('HTTP/') && !lines[0].startsWith('RTSP/');
+      if (!isRequest && !this.waiters.length) return;
       const status = Number(lines[0].split(' ')[1]);
       const headers = {};
       for (const l of lines.slice(1)) { const i = l.indexOf(':'); if (i > 0) headers[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim(); }
@@ -145,7 +148,13 @@ class Connection {
       if (this.plain.length < end + 4 + len) return;
       const body = this.plain.subarray(end + 4, end + 4 + len);
       this.plain = this.plain.subarray(end + 4 + len);
-      this.waiters.shift().resolve({ status, headers, body });
+      if (isRequest) {
+        const [method, path] = lines[0].split(' ');
+        this.onRequest?.({ method, path, headers, body });
+        this.write(Buffer.from('HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n'));
+      } else {
+        this.waiters.shift().resolve({ status, headers, body });
+      }
     }
   }
 
@@ -216,6 +225,40 @@ export class AirPlayDevice {
     await this.conn.connect();
     if (this.credentials) await this.pairVerify();
     else await this.transientPair();
+    await this.serverInfo();
+    await this.openReverse();
+  }
+
+  async serverInfo() {
+    try {
+      const r = await this.conn.request('GET', '/server-info', { headers: { 'Content-Length': 0 } });
+      let info = null;
+      try { info = r.body.length ? decodeBplist(r.body) : null; } catch { /* xml or empty */ }
+      log('airplay', `/server-info → HTTP ${r.status}`, info ? { model: info.model, osBuildVersion: info.osBuildVersion, sourceVersion: info.sourceVersion, features: info.features, statusFlags: info.statusFlags } : r.body.toString('utf8').slice(0, 300));
+    } catch (e) { log('airplay', `/server-info failed: ${e.message}`); }
+  }
+
+  // iOS keeps a second, reverse HTTP connection open on which the Apple TV reports playback
+  // events. tvOS ties a /play session to it (same X-Apple-Session-ID).
+  async openReverse() {
+    try {
+      const rev = new Connection(this.device.host, this.device.port || 7000);
+      rev.sessionId = this.sessionId;
+      await rev.connect();
+      if (this.credentials) await this.pairVerify(rev);
+      else { log('airplay', 'no credentials for the reverse channel'); rev.close(); return; }
+      const r = await rev.request('POST', '/reverse', { headers: { Upgrade: 'PTTH/1.0', Connection: 'Upgrade', 'X-Apple-Purpose': 'event', 'Content-Length': 0 } });
+      log('airplay', `/reverse → HTTP ${r.status}`);
+      rev.onRequest = (req) => {
+        let detail = '';
+        try { detail = req.body.length ? JSON.stringify(decodeBplist(req.body)) : ''; } catch { detail = req.body.toString('utf8').slice(0, 300); }
+        log('airplay', `event from TV: ${req.method} ${req.path}`, detail);
+        this.onEvent?.(req, detail);
+      };
+      this.rev = rev;
+    } catch (e) {
+      log('airplay', `reverse channel failed: ${e.message}`);
+    }
   }
 
   async transientPair() {
@@ -273,8 +316,8 @@ export class AirPlayDevice {
     return this.credentials;
   }
 
-  async pairVerify() {
-    const c = this.conn;
+  async pairVerify(conn = this.conn) {
+    const c = conn;
     const { clientId, seed, serverPk } = this.credentials;
     const eph = crypto.generateKeyPairSync('x25519');
     const ephPub = rawPublic(eph.publicKey);
@@ -377,7 +420,7 @@ export class AirPlayDevice {
   rate(value) { return this.conn.request('POST', `/rate?value=${value}`); }
   seek(seconds) { return this.conn.request('POST', `/scrub?position=${seconds.toFixed(3)}`); }
   async stop() { try { await this.conn.request('POST', '/stop', { timeout: 3000 }); } catch { /* already gone */ } }
-  close() { this.conn?.close(); }
+  close() { this.conn?.close(); this.rev?.close(); }
 }
 
 // Probe whether a device accepts our handshake without showing anything on screen.
