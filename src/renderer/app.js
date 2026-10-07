@@ -478,8 +478,8 @@ const VIEWS = {
           <div class="hint">Evens out loudness between songs using the ReplayGain values stored in the files. “Smart” uses album gain when playing in order and track gain when shuffling.</div></div>
           <div class="segmented">${[['off', 'Off'], ['track', 'Track'], ['album', 'Album'], ['auto', 'Smart']].map(([v, l]) => `<button data-rg="${v}" class="${(S.settings.replayGain || 'auto') === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
         ${S.info.platform === 'darwin' ? `<div class="box-row"><div class="grow"><div>AirPlay transfer</div>
-          <div class="hint">How videos get to an Apple TV. “Mac sends” works like QuickTime; “TV loads” lets the Apple TV fetch the file from Chew Player itself. If the picture drops out, try the other one.</div></div>
-          <div class="segmented">${[['mac', 'Mac sends'], ['tv', 'TV loads']].map(([v, l]) => `<button data-airplay="${v}" class="${(S.settings.airplayTransfer || 'mac') === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>` : ''}
+          <div class="hint">How videos get to an Apple TV. “TV loads” lets the Apple TV fetch the file from Chew Player itself (recommended); “Mac sends” works like QuickTime. If the picture drops out, try the other one.</div></div>
+          <div class="segmented">${[['tv', 'TV loads'], ['mac', 'Mac sends']].map(([v, l]) => `<button data-airplay="${v}" class="${(S.settings.airplayTransfer || 'tv') === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>` : ''}
         <div class="box-row"><div class="grow"><div>Output device</div>
           <div class="hint">Play through a specific device, such as a USB DAC or headphones.</div></div>
           <select class="select" id="output-select">${outputOptions()}</select></div>

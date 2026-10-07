@@ -158,7 +158,7 @@ export class CastManager extends EventEmitter {
   connect(device) {
     // macOS: hand AirPlay to the system (AVFoundation) via the native helper — it works with every
     // tvOS version and takes care of pairing itself. Other platforms speak the protocol directly.
-    if (device.protocol === 'airplay' && nativeAirPlayHelper()) return new NativeAirPlayClient(device, this.server, () => this.settings().airplayTransfer || 'mac');
+    if (device.protocol === 'airplay' && nativeAirPlayHelper()) return new NativeAirPlayClient(device, this.server, () => this.settings().airplayTransfer || 'tv');
     if (device.protocol === 'airplay') {
       return new AirPlayClient(device, this.credsFor(device), {
         server: this.server,

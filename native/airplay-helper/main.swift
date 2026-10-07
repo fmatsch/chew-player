@@ -124,7 +124,13 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Local files are handed over like QuickTime does; the fallback is the other form.
             fallbackURL = (msg["fallback"] as? String).flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : URL(string: $0) }
             player.pause()
-            player.replaceCurrentItem(with: AVPlayerItem(url: url))
+            let item = AVPlayerItem(url: url)
+            // The TV does the playing; don't let the Mac buffer hundreds of megabytes on its own.
+            item.preferredForwardBufferDuration = 2
+            player.replaceCurrentItem(with: item)
+            // Position the item before AirPlay takes over, so the Apple TV starts right there instead
+            // of starting at the beginning and then jumping (which showed as dropouts at the start).
+            if startAt > 0 { player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) }
             if let icon = msg["icon"] as? String, let image = NSImage(contentsOfFile: icon) { NSApp.applicationIconImage = image }
             titleLabel.stringValue = (msg["title"] as? String) ?? "Chew Player"
             setNowPlaying(title: msg["title"] as? String, subtitle: msg["subtitle"] as? String, artwork: msg["artwork"] as? String)
@@ -185,9 +191,16 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         beganAt = Date()
         everPlayed = false
         enterMiniMode()
-        player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600)) { _ in
+        let startPlaying = {
             self.player.play()
             self.publishNowPlaying(playing: true, at: self.startAt, reason: "start")
+        }
+        // Already positioned in "load"; only seek again if the item drifted (e.g. not ready back then).
+        let now = player.currentTime().seconds
+        if startAt > 0, !(now.isFinite && abs(now - startAt) < 1) {
+            player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { _ in startPlaying() }
+        } else {
+            startPlaying()
         }
     }
 
@@ -277,7 +290,9 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         fallbackURL = nil
         emit(["ev": "log", "message": "\(reason) — switching to \(url.isFileURL ? "the local file" : "the network stream")"])
         let at = player.currentTime().seconds
-        player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 2
+        player.replaceCurrentItem(with: item)
         player.seek(to: CMTime(seconds: at.isFinite && at > 0 ? at : startAt, preferredTimescale: 600)) { _ in
             if self.started { self.player.play() }
         }
