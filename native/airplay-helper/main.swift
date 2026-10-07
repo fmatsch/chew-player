@@ -125,6 +125,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             fallbackURL = (msg["fallback"] as? String).flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : URL(string: $0) }
             player.pause()
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
+            if let icon = msg["icon"] as? String, let image = NSImage(contentsOfFile: icon) { NSApp.applicationIconImage = image }
             titleLabel.stringValue = (msg["title"] as? String) ?? "Chew Player"
             setNowPlaying(title: msg["title"] as? String, subtitle: msg["subtitle"] as? String, artwork: msg["artwork"] as? String)
             let device = (msg["device"] as? String).map { "“\($0)”" } ?? "your Apple TV"
@@ -287,12 +288,15 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // app without visible windows as background work and lowers the priority of the AirPlay transfer
     // it requests, which showed as dropouts every few seconds on the TV.
     func enterMiniMode() {
+        // Become a regular app (Dock icon) like QuickTime: macOS gives apps the user can see full
+        // priority for the AirPlay transfer, background helpers get less.
+        NSApp.setActivationPolicy(.regular)
         picker.isHidden = true
         hintLabel.stringValue = "Playing on your TV"
         cancelButton.isHidden = true
         controls.isHidden = false
-        playerView.isHidden = true
-        let size = NSSize(width: 300, height: 110)
+        playerView.isHidden = false
+        let size = NSSize(width: 300, height: 230)
         if let screen = NSScreen.main?.visibleFrame {
             window.setFrame(NSRect(x: screen.maxX - size.width - 20, y: screen.minY + 20, width: size.width, height: size.height), display: true)
         }

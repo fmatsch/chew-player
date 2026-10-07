@@ -264,6 +264,7 @@ function registerIpc() {
     if (key === 'theme') nativeTheme.themeSource = value;
     if (key === 'watchFolders') { library.watch(); videoLib.watch(); }
     if (key === 'autoUpdate') updater.schedule();
+    if (key === 'airplayTransfer') cast.restartCurrent();
     library.save();
   });
   ipcMain.handle('session:get', () => sessionState);

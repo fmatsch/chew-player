@@ -261,6 +261,15 @@ export class CastManager extends EventEmitter {
     }
   }
 
+  // Start the current item again at the same spot (e.g. after the AirPlay transfer setting changed).
+  async restartCurrent() {
+    const s = this.session;
+    if (!s || s.state === 'ended') return;
+    const at = s.offset + (s.remotePos || 0);
+    log('cast', `restarting at ${Math.round(at)}s`);
+    await this.play({ deviceId: s.device.id, kind: s.kind, id: s.id, start: at, ...s.opts });
+  }
+
   async stop() {
     const s = this.session;
     clearInterval(this.poll);
@@ -357,7 +366,8 @@ class NativeAirPlayClient {
     const primary = tvLoads ? url : filePath;
     const fallback = tvLoads ? filePath : url;
     log('airplay', `transfer: ${tvLoads ? 'Apple TV loads from the network' : 'Mac sends the file'}`);
-    this.send({ cmd: 'load', url: primary, fallback: fallback || undefined, start, title, subtitle, artwork: artPath || undefined, device: this.device.native ? undefined : this.device.name });
+    const icon = process.resourcesPath ? path.join(process.resourcesPath, 'icon.icns') : null;
+    this.send({ cmd: 'load', url: primary, fallback: fallback || undefined, start, title, subtitle, artwork: artPath || undefined, icon: icon && existsSync(icon) ? icon : undefined, device: this.device.native ? undefined : this.device.name });
     log('airplay', `handed to macOS AirPlay${this.device.native ? '' : ` (choose “${this.device.name}”)`}`);
   }
 
