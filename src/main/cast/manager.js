@@ -346,9 +346,10 @@ class NativeAirPlayClient {
     this.ended = false;
     this.wantsNext = false;
     this.last = { state: 'choosing', position: start, duration: 0 };
-    // The Apple TV fetches the original file over the network and decodes it itself (best picture).
-    // The local path is the fallback, where macOS streams the video to the TV.
-    this.send({ cmd: 'load', url, fallback: filePath || undefined, start, title, subtitle, artwork: artPath || undefined, device: this.device.native ? undefined : this.device.name });
+    // Hand over the local file, exactly like QuickTime does — macOS then manages the transfer to the
+    // TV itself. (Giving macOS 27 a network URL instead made the picture drop out on the TV.)
+    // The network URL is only the fallback, and the only option for streams FFmpeg converts on the fly.
+    this.send({ cmd: 'load', url: filePath || url, fallback: filePath ? url : undefined, start, title, subtitle, artwork: artPath || undefined, device: this.device.native ? undefined : this.device.name });
     log('airplay', `handed to macOS AirPlay${this.device.native ? '' : ` (choose “${this.device.name}”)`}`);
   }
 

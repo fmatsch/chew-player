@@ -100,9 +100,8 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             startAt = (msg["start"] as? Double) ?? 0
             started = false
-            // Prefer a network URL: the Apple TV then fetches and decodes the original file itself.
-            // If that fails, fall back to the local file, which macOS streams to the TV.
-            fallbackURL = (msg["fallback"] as? String).map { URL(fileURLWithPath: $0) }
+            // Local files are handed over like QuickTime does; the fallback is the other form.
+            fallbackURL = (msg["fallback"] as? String).flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : URL(string: $0) }
             player.pause()
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
             titleLabel.stringValue = (msg["title"] as? String) ?? "Chew Player"
@@ -232,7 +231,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if started { updateNowPlaying(position: pos.isFinite ? pos : 0, duration: dur.isFinite ? dur : 0, playing: state == "playing") }
         if state == "playing" { everPlayed = true }
         // The TV may hang without an error when it can't reach the network URL.
-        if started, !everPlayed, let t = beganAt, Date().timeIntervalSince(t) > 12, useFallback(reason: "no picture after 12 s") { beganAt = Date() }
+        if started, !everPlayed, let t = beganAt, Date().timeIntervalSince(t) > 20, useFallback(reason: "no picture after 20 s") { beganAt = Date() }
         emit(["ev": "status", "state": state, "position": pos.isFinite ? pos : 0, "duration": dur.isFinite ? dur : 0, "external": player.isExternalPlaybackActive])
     }
 
@@ -240,7 +239,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func useFallback(reason: String) -> Bool {
         guard let url = fallbackURL else { return false }
         fallbackURL = nil
-        emit(["ev": "log", "message": "network URL failed (\(reason)), using the local file"])
+        emit(["ev": "log", "message": "\(reason) — switching to \(url.isFileURL ? "the local file" : "the network stream")"])
         let at = player.currentTime().seconds
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         player.seek(to: CMTime(seconds: at.isFinite && at > 0 ? at : startAt, preferredTimescale: 600)) { _ in
