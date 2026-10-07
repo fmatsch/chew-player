@@ -28,6 +28,9 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var startAt: Double = 0
     var started = false
     var nowPlaying: [String: Any] = [:]
+    var fallbackURL: URL?
+    var beganAt: Date?
+    var everPlayed = false
     var observers: [NSKeyValueObservation] = []
     var timer: Timer?
 
@@ -70,8 +73,9 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.async { self?.externalChanged() }
         })
         NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { _ in emit(["ev": "ended"]) }
-        NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: nil, queue: .main) { n in
+        NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: nil, queue: .main) { [weak self] n in
             let err = (n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription ?? "Playback failed"
+            if self?.useFallback(reason: err) == true { return }
             emit(["ev": "error", "message": err])
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.report() }
@@ -96,6 +100,9 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             startAt = (msg["start"] as? Double) ?? 0
             started = false
+            // Prefer a network URL: the Apple TV then fetches and decodes the original file itself.
+            // If that fails, fall back to the local file, which macOS streams to the TV.
+            fallbackURL = (msg["fallback"] as? String).map { URL(fileURLWithPath: $0) }
             player.pause()
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
             titleLabel.stringValue = (msg["title"] as? String) ?? "Chew Player"
@@ -151,6 +158,8 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func begin() {
         guard !started, player.currentItem != nil else { return }
         started = true
+        beganAt = Date()
+        everPlayed = false
         window.orderOut(nil)
         player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600)) { _ in self.player.play() }
     }
@@ -203,11 +212,27 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             default: state = "paused"
             }
         }
-        if let err = item?.error { emit(["ev": "error", "message": err.localizedDescription]) }
+        if let err = item?.error, !useFallback(reason: err.localizedDescription) { emit(["ev": "error", "message": err.localizedDescription]) }
         let pos = player.currentTime().seconds
         let dur = item?.duration.seconds ?? 0
         if started { updateNowPlaying(position: pos.isFinite ? pos : 0, duration: dur.isFinite ? dur : 0, playing: state == "playing") }
+        if state == "playing" { everPlayed = true }
+        // The TV may hang without an error when it can't reach the network URL.
+        if started, !everPlayed, let t = beganAt, Date().timeIntervalSince(t) > 12, useFallback(reason: "no picture after 12 s") { beganAt = Date() }
         emit(["ev": "status", "state": state, "position": pos.isFinite ? pos : 0, "duration": dur.isFinite ? dur : 0, "external": player.isExternalPlaybackActive])
+    }
+
+    // Switch to the local file once if the network URL can't be played.
+    func useFallback(reason: String) -> Bool {
+        guard let url = fallbackURL else { return false }
+        fallbackURL = nil
+        emit(["ev": "log", "message": "network URL failed (\(reason)), using the local file"])
+        let at = player.currentTime().seconds
+        player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        player.seek(to: CMTime(seconds: at.isFinite && at > 0 ? at : startAt, preferredTimescale: 600)) { _ in
+            if self.started { self.player.play() }
+        }
+        return true
     }
 
     @objc func cancel() {

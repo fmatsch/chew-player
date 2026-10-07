@@ -331,6 +331,7 @@ class NativeAirPlayClient {
         else if (ev.ev === 'status') this.last = ev;
         else if (ev.ev === 'ended') this.ended = true;
         else if (ev.ev === 'next') this.wantsNext = true;
+        else if (ev.ev === 'log') log('airplay', ev.message);
         else if (ev.ev === 'closed') this.closed = true;
         else if (ev.ev === 'error') { this.error = ev.message; log('airplay', `macOS AirPlay error: ${ev.message}`); }
       });
@@ -345,8 +346,9 @@ class NativeAirPlayClient {
     this.ended = false;
     this.wantsNext = false;
     this.last = { state: 'choosing', position: start, duration: 0 };
-    // Files the Apple TV can play as they are go straight from disk; AVFoundation streams them itself.
-    this.send({ cmd: 'load', url: filePath || url, start, title, subtitle, artwork: artPath || undefined, device: this.device.native ? undefined : this.device.name });
+    // The Apple TV fetches the original file over the network and decodes it itself (best picture).
+    // The local path is the fallback, where macOS streams the video to the TV.
+    this.send({ cmd: 'load', url, fallback: filePath || undefined, start, title, subtitle, artwork: artPath || undefined, device: this.device.native ? undefined : this.device.name });
     log('airplay', `handed to macOS AirPlay${this.device.native ? '' : ` (choose “${this.device.name}”)`}`);
   }
 
