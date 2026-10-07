@@ -1449,7 +1449,15 @@ function pairDialog(st) {
       const r = await chew.cast.play(st.pending);
       if (r?.state === 'error') toast(r.message);
     } catch (e) {
-      msg.textContent = /PIN/i.test(e.message) ? 'That code didn’t work. Check the TV and try again.' : e.message;
+      const reason = e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      if (/^Wrong code/.test(reason)) {
+        msg.textContent = 'That code didn’t work. Check the code on the TV and try again.';
+      } else {
+        // Session expired, connection dropped, Apple TV busy … — start over with a fresh code.
+        msg.textContent = `${reason}. A new code is now shown on the TV.`;
+        $('#pin').value = '';
+        chew.cast.pairStart(st.deviceId).then(() => $('#pin').focus()).catch((e2) => { msg.textContent = `Couldn’t restart pairing: ${e2.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`; });
+      }
     }
   };
   modal.onclick = (e) => {

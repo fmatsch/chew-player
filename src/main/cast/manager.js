@@ -123,6 +123,7 @@ export class CastManager extends EventEmitter {
       this.startPolling();
     } catch (e) {
       if (e.needsPin) {
+        this.session?.client?.close(); // don't leave a half-open connection that could block pairing
         this.session = null;
         return this.status({ state: 'pin-required', deviceId, deviceName: device.name, pending: { deviceId, kind, id, start, audio, subtitle } });
       }

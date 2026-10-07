@@ -12,6 +12,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { encodeBplist, decodeBplist } from './plist.js';
+import { seal, open as openSealed } from './chacha.js';
 
 const require = createRequire(import.meta.url);
 const { SRP, SrpClient } = require('fast-srp-hap');
@@ -53,18 +54,24 @@ function tlvDecode(buf) {
 
 const hkdf = (ikm, salt, info) => Buffer.from(crypto.hkdfSync('sha512', ikm, Buffer.from(salt), Buffer.from(info), 32));
 
-function chachaSeal(key, nonce, plain, aad) {
-  const c = crypto.createCipheriv('chacha20-poly1305', key, nonce, { authTagLength: 16 });
-  if (aad) c.setAAD(aad, { plaintextLength: plain.length });
-  return Buffer.concat([c.update(plain), c.final(), c.getAuthTag()]);
-}
+// Electron's BoringSSL lacks chacha20-poly1305 in createCipheriv, so this goes through ./chacha.js.
+const chachaSeal = (key, nonce, plain, aad) => seal(key, nonce, plain, aad || Buffer.alloc(0));
+const chachaOpen = (key, nonce, sealed, aad) => openSealed(key, nonce, sealed, aad || Buffer.alloc(0));
 
-function chachaOpen(key, nonce, sealed, aad) {
-  const d = crypto.createDecipheriv('chacha20-poly1305', key, nonce, { authTagLength: 16 });
-  if (aad) d.setAAD(aad, { plaintextLength: sealed.length - 16 });
-  d.setAuthTag(sealed.subarray(sealed.length - 16));
-  return Buffer.concat([d.update(sealed.subarray(0, sealed.length - 16)), d.final()]);
-}
+// HomeKit pairing error codes, as the Apple TV reports them.
+const PAIR_ERRORS = {
+  1: 'the Apple TV reported an unknown error',
+  2: 'wrong code',
+  3: 'too many attempts — wait a minute and try again',
+  4: 'the Apple TV has too many paired devices',
+  5: 'too many failed attempts — restart the Apple TV and try again',
+  6: 'pairing is not available right now',
+  7: 'the Apple TV is busy pairing with another device',
+};
+const pairError = (tlv) => {
+  const code = tlv[T.Error]?.[0];
+  return Object.assign(new Error(code === 2 ? 'Wrong code' : `Pairing failed: ${PAIR_ERRORS[code] || `error ${code}`}`), { code });
+};
 
 const padNonce = (s) => Buffer.concat([Buffer.alloc(4), Buffer.from(s)]);
 
@@ -181,7 +188,7 @@ class Connection {
   close() { try { this.sock?.destroy(); } catch { /* ignore */ } }
 }
 
-const pairHeaders = (hkp) => ({ 'Content-Type': 'application/octet-stream', 'X-Apple-HKP': hkp });
+const pairHeaders = (hkp) => ({ 'Content-Type': 'application/octet-stream', 'X-Apple-HKP': hkp, Connection: 'keep-alive' });
 
 async function srpExchange(conn, m2, pin) {
   if (m2[T.Error]) throw Object.assign(new Error('Apple TV refused pairing'), { code: m2[T.Error][0] });
@@ -228,10 +235,11 @@ export class AirPlayDevice {
     this.conn = new Connection(this.device.host, this.device.port || 7000);
     this.conn.sessionId = this.sessionId;
     await this.conn.connect();
-    await this.conn.request('POST', '/pair-pin-start', { headers: { 'Content-Length': 0 } });
+    await this.conn.request('POST', '/pair-pin-start', { headers: pairHeaders(3) });
     const r2 = await this.conn.request('POST', '/pair-setup', { headers: pairHeaders(3), body: tlvEncode([[T.Method, 0], [T.State, 1]]) });
     this.pendingM2 = tlvDecode(r2.body);
-    if (this.pendingM2[T.Error]) throw new Error('The Apple TV refused to pair');
+    if (this.pendingM2[T.Error]) throw pairError(this.pendingM2);
+    if (!this.pendingM2[T.PublicKey] || !this.pendingM2[T.Salt]) throw new Error(`Pairing failed: unexpected answer (HTTP ${r2.status})`);
   }
 
   // Step 2: finish with the PIN shown on the TV. Returns long-term credentials to store.
@@ -240,7 +248,8 @@ export class AirPlayDevice {
     const srp = await srpExchange(c, this.pendingM2, String(pin));
     const r4 = await c.request('POST', '/pair-setup', { headers: pairHeaders(3), body: tlvEncode([[T.State, 3], [T.PublicKey, srp.computeA()], [T.Proof, srp.computeM1()]]) });
     const m4 = tlvDecode(r4.body);
-    if (m4[T.Error] || !m4[T.Proof]) throw new Error('Wrong PIN');
+    if (m4[T.Error]) throw pairError(m4);
+    if (!m4[T.Proof]) throw new Error(`Pairing failed: unexpected answer (HTTP ${r4.status})`);
     srp.checkM2(m4[T.Proof]);
     const K = srp.computeK();
 
@@ -254,7 +263,7 @@ export class AirPlayDevice {
     const encKey = hkdf(K, 'Pair-Setup-Encrypt-Salt', 'Pair-Setup-Encrypt-Info');
     const r6 = await c.request('POST', '/pair-setup', { headers: pairHeaders(3), body: tlvEncode([[T.State, 5], [T.EncryptedData, chachaSeal(encKey, padNonce('PS-Msg05'), sub)]]) });
     const m6 = tlvDecode(r6.body);
-    if (m6[T.Error]) throw new Error('Pairing was rejected');
+    if (m6[T.Error]) throw pairError(m6);
     const inner = tlvDecode(chachaOpen(encKey, padNonce('PS-Msg06'), m6[T.EncryptedData]));
     this.credentials = { clientId: clientId.toString(), seed: seed.toString('hex'), serverPk: inner[T.PublicKey].toString('hex') };
     this.conn.close();
