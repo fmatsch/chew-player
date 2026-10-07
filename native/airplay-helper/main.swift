@@ -106,6 +106,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             player.pause()
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
             titleLabel.stringValue = (msg["title"] as? String) ?? "Chew Player"
+            lastPublished = nil
             setNowPlaying(title: msg["title"] as? String, subtitle: msg["subtitle"] as? String, artwork: msg["artwork"] as? String)
             let device = (msg["device"] as? String).map { "“\($0)”" } ?? "your Apple TV"
             hintLabel.stringValue = "Choose \(device) in the AirPlay menu."
@@ -175,8 +176,21 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
+    // Only call this when something changes (start, pause, seek): with AirPlay, every Now Playing
+    // update is synced to the Apple TV, and updating the position continuously makes the picture
+    // stutter. Between updates the system extrapolates the position from the playback rate.
+    var lastPublished: (playing: Bool, position: Double, duration: Double)?
+
     func updateNowPlaying(position: Double, duration: Double, playing: Bool) {
         guard !nowPlaying.isEmpty else { return }
+        if let last = lastPublished {
+            let expected = last.position + (playing && last.playing ? 0.5 : 0)
+            if last.playing == playing && abs(position - expected) < 2.0 && last.duration == duration {
+                lastPublished = (playing, position, duration)
+                return
+            }
+        }
+        lastPublished = (playing, position, duration)
         nowPlaying[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
         nowPlaying[MPNowPlayingInfoPropertyPlaybackRate] = playing ? 1.0 : 0.0
         if duration > 0 { nowPlaying[MPMediaItemPropertyPlaybackDuration] = duration }

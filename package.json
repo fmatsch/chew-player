@@ -1,7 +1,7 @@
 {
   "name": "chew-player",
   "productName": "Chew Player",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "A simple, folder-based music and video player for macOS and Windows.",
   "author": "fmatsch",
   "license": "MIT",
