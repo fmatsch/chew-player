@@ -326,8 +326,15 @@ export class VideoPlayer {
 
   // Remote (casting) status updates from the cast manager.
   setRemote(status) {
+    const wasRemote = !!this.remote;
     this.remote = status;
-    if (status) { this.video.pause(); }
+    if (status) { if (!this.video.paused) this.video.pause(); }
+    // While the TV plays, the AirPlay helper owns the Mac's Now Playing info — a second writer
+    // (this app) would make macOS send extra updates to the Apple TV.
+    if ('mediaSession' in navigator) {
+      if (status && !wasRemote) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; }
+      else if (!status && wasRemote) this.updateMediaSession();
+    }
     this.renderControls();
   }
 }

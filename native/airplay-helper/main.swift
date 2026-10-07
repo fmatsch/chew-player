@@ -54,6 +54,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // (worse) way to send the video to the TV.
         playerView.player = player
         playerView.controlsStyle = .none
+        playerView.updatesNowPlayingInfoCenter = false
         playerView.translatesAutoresizingMaskIntoConstraints = false
         playerView.widthAnchor.constraint(equalToConstant: 160).isActive = true
         playerView.heightAnchor.constraint(equalToConstant: 90).isActive = true
@@ -114,16 +115,16 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             player.pause()
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
             titleLabel.stringValue = (msg["title"] as? String) ?? "Chew Player"
-            lastPublished = nil
             setNowPlaying(title: msg["title"] as? String, subtitle: msg["subtitle"] as? String, artwork: msg["artwork"] as? String)
             let device = (msg["device"] as? String).map { "“\($0)”" } ?? "your Apple TV"
             hintLabel.stringValue = "Choose \(device) in the AirPlay menu."
             if player.isExternalPlaybackActive { begin() } else { showPicker() }
-        case "play": player.play()
-        case "pause": player.pause()
+        case "play": player.play(); publishNowPlaying(playing: true, reason: "play")
+        case "pause": player.pause(); publishNowPlaying(playing: false, reason: "pause")
         case "seek":
             let t = (msg["t"] as? Double) ?? 0
             player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            publishNowPlaying(playing: player.rate > 0, at: t, reason: "seek")
         case "pick": showPicker()
         case "stop":
             keepAwake(false)
@@ -172,7 +173,10 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         beganAt = Date()
         everPlayed = false
         window.orderOut(nil)
-        player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600)) { _ in self.player.play() }
+        player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600)) { _ in
+            self.player.play()
+            self.publishNowPlaying(playing: true, at: self.startAt, reason: "start")
+        }
     }
 
     // The Apple TV (and the Mac's Now Playing menu) show what's in the Now Playing center.
@@ -186,41 +190,38 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
-    // Only call this when something changes (start, pause, seek): with AirPlay, every Now Playing
-    // update is synced to the Apple TV, and updating the position continuously makes the picture
-    // stutter. Between updates the system extrapolates the position from the playback rate.
-    var lastPublished: (playing: Bool, position: Double, duration: Double)?
-
-    func updateNowPlaying(position: Double, duration: Double, playing: Bool) {
+    // Publish to Now Playing ONLY on real events (start, play, pause, seek, remote command).
+    // With AirPlay every update is synced to the Apple TV and nudges its playback; the position the
+    // Mac sees during AirPlay arrives in jumps, so deriving updates from it caused periodic glitches.
+    // Between events the system extrapolates the position from the playback rate.
+    func publishNowPlaying(playing: Bool, at position: Double? = nil, reason: String) {
         guard !nowPlaying.isEmpty else { return }
-        if let last = lastPublished {
-            let expected = last.position + (playing && last.playing ? 0.5 : 0)
-            if last.playing == playing && abs(position - expected) < 2.0 && last.duration == duration {
-                lastPublished = (playing, position, duration)
-                return
-            }
-        }
-        lastPublished = (playing, position, duration)
-        nowPlaying[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
+        let pos = position ?? player.currentTime().seconds
+        let dur = player.currentItem?.duration.seconds ?? 0
+        nowPlaying[MPNowPlayingInfoPropertyElapsedPlaybackTime] = pos.isFinite ? pos : 0
         nowPlaying[MPNowPlayingInfoPropertyPlaybackRate] = playing ? 1.0 : 0.0
-        if duration > 0 { nowPlaying[MPMediaItemPropertyPlaybackDuration] = duration }
+        if dur.isFinite && dur > 0 { nowPlaying[MPMediaItemPropertyPlaybackDuration] = dur }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlaying
         MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
+        emit(["ev": "log", "message": "Now Playing updated (\(reason))"])
     }
 
     // Play/pause/seek from the Apple TV remote or the Mac's media keys.
     func setupRemoteCommands() {
         let c = MPRemoteCommandCenter.shared()
-        c.playCommand.addTarget { [weak self] _ in self?.player.play(); return .success }
-        c.pauseCommand.addTarget { [weak self] _ in self?.player.pause(); return .success }
+        c.playCommand.addTarget { [weak self] _ in self?.player.play(); self?.publishNowPlaying(playing: true, reason: "remote play"); return .success }
+        c.pauseCommand.addTarget { [weak self] _ in self?.player.pause(); self?.publishNowPlaying(playing: false, reason: "remote pause"); return .success }
         c.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let p = self?.player else { return .commandFailed }
-            if p.timeControlStatus == .paused { p.play() } else { p.pause() }
+            let play = p.timeControlStatus == .paused
+            if play { p.play() } else { p.pause() }
+            self?.publishNowPlaying(playing: play, reason: "remote toggle")
             return .success
         }
         c.changePlaybackPositionCommand.addTarget { [weak self] e in
             guard let e = e as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self?.player.seek(to: CMTime(seconds: e.positionTime, preferredTimescale: 600))
+            self?.publishNowPlaying(playing: (self?.player.rate ?? 0) > 0, at: e.positionTime, reason: "remote seek")
             return .success
         }
         c.nextTrackCommand.addTarget { _ in emit(["ev": "next"]); return .success }
@@ -252,7 +253,6 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let err = item?.error, !useFallback(reason: err.localizedDescription) { emit(["ev": "error", "message": err.localizedDescription]) }
         let pos = player.currentTime().seconds
         let dur = item?.duration.seconds ?? 0
-        if started { updateNowPlaying(position: pos.isFinite ? pos : 0, duration: dur.isFinite ? dur : 0, playing: state == "playing") }
         if state == "playing" { everPlayed = true }
         // The TV may hang without an error when it can't reach the network URL.
         if started, !everPlayed, let t = beganAt, Date().timeIntervalSince(t) > 20, useFallback(reason: "no picture after 20 s") { beganAt = Date() }
