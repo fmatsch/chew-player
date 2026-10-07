@@ -802,7 +802,7 @@ function renderNowPlaying() {
   const tech = t ? [t.format, t.lossless && t.sampleRate ? `${+(t.sampleRate / 1000).toFixed(1)} kHz` : t.bitrate ? `${t.bitrate} kbps` : '', t.lossless && t.bitsPerSample ? `${t.bitsPerSample} bit` : ''].filter(Boolean).join(' · ') : '';
   $('#now-tech').textContent = tech;
   document.title = t ? `${t.title} — ${t.artist || 'Chew Player'}` : 'Chew Player';
-  if ('mediaSession' in navigator) {
+  if ('mediaSession' in navigator && !window.chewVideo?.player?.item) {
     navigator.mediaSession.metadata = t ? new MediaMetadata({
       title: t.title || '', artist: t.artist || '', album: t.album || '',
       artwork: t.cover ? [{ src: coverUrl(t.cover), sizes: '500x500' }] : [],
@@ -882,11 +882,13 @@ $('.now').addEventListener('click', () => { if (castingVideo()) video.player.att
 
 if ('mediaSession' in navigator) {
   const ms = navigator.mediaSession;
-  ms.setActionHandler('play', () => player.play());
-  ms.setActionHandler('pause', () => player.pause());
-  ms.setActionHandler('previoustrack', () => player.prev());
-  ms.setActionHandler('nexttrack', () => player.next());
-  try { ms.setActionHandler('seekto', (d) => player.seek(d.seekTime)); } catch { /* unsupported */ }
+  // Media keys go to the video while one is open, otherwise to the music player.
+  const vp = () => (window.chewVideo?.player?.item ? window.chewVideo.player : null);
+  ms.setActionHandler('play', () => { const v = vp(); if (v) { if (!v.playing) v.toggle(); } else player.play(); });
+  ms.setActionHandler('pause', () => { const v = vp(); if (v) { if (v.playing) v.toggle(); } else player.pause(); });
+  ms.setActionHandler('previoustrack', () => { const v = vp(); if (v) v.seek(v.time - 30); else player.prev(); });
+  ms.setActionHandler('nexttrack', () => { const v = vp(); if (v) v.next(); else player.next(); });
+  try { ms.setActionHandler('seekto', (d) => { const v = vp(); if (v) v.seek(d.seekTime); else player.seek(d.seekTime); }); } catch { /* unsupported */ }
 }
 
 // ---------------------------------------------------------------- status & toasts
@@ -1560,6 +1562,7 @@ const video = initVideo({
   playlistSubmenu: (kind) => playlistSubmenu(kind),
   emptyResult: (t) => emptyResult(t),
   pauseMusic: () => player.pause(),
+  restoreMediaSession: () => renderNowPlaying(),
   castVideo: (action, arg) => castVideo(action, arg),
 });
 window.chewVideo = video;

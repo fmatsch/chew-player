@@ -172,8 +172,8 @@ export class CastManager extends EventEmitter {
   async prepare(device, kind, item, start, audio, subtitle) {
     const host = device.host;
     const meta = kind === 'video'
-      ? { title: item.title, subtitle: item.type === 'episode' ? `${item.show} · S${item.season}E${item.episode}` : item.year ? String(item.year) : '', image: this.imageUrl(item.poster || item.still, host) }
-      : { title: item.title, subtitle: [item.artist, item.album].filter(Boolean).join(' — '), image: this.imageUrl(item.cover, host) };
+      ? { title: item.title, subtitle: item.type === 'episode' ? `${item.show} · S${item.season}E${item.episode}` : item.year ? String(item.year) : '', image: this.imageUrl(item.poster || item.still, host), artPath: item.poster || item.still || null }
+      : { title: item.title, subtitle: [item.artist, item.album].filter(Boolean).join(' — '), image: this.imageUrl(item.cover, host), artPath: item.cover || null };
     const proto = device.protocol;
 
     if (kind === 'audio') {
@@ -330,6 +330,7 @@ class NativeAirPlayClient {
         if (ev.ev === 'ready') resolve();
         else if (ev.ev === 'status') this.last = ev;
         else if (ev.ev === 'ended') this.ended = true;
+        else if (ev.ev === 'next') this.wantsNext = true;
         else if (ev.ev === 'closed') this.closed = true;
         else if (ev.ev === 'error') { this.error = ev.message; log('airplay', `macOS AirPlay error: ${ev.message}`); }
       });
@@ -339,15 +340,20 @@ class NativeAirPlayClient {
 
   send(obj) { if (!this.exited) this.proc.stdin.write(`${JSON.stringify(obj)}\n`); }
 
-  async load({ url, title, start = 0, filePath }) {
+  async load({ url, title, subtitle, artPath, start = 0, filePath }) {
+    // A new item on the same AirPlay session (next episode, next song).
+    this.ended = false;
+    this.wantsNext = false;
+    this.last = { state: 'choosing', position: start, duration: 0 };
     // Files the Apple TV can play as they are go straight from disk; AVFoundation streams them itself.
-    this.send({ cmd: 'load', url: filePath || url, start, title, device: this.device.native ? undefined : this.device.name });
+    this.send({ cmd: 'load', url: filePath || url, start, title, subtitle, artwork: artPath || undefined, device: this.device.native ? undefined : this.device.name });
     log('airplay', `handed to macOS AirPlay${this.device.native ? '' : ` (choose “${this.device.name}”)`}`);
   }
 
   async status() {
     if (this.closed || this.exited) return { state: 'closed', position: 0, duration: 0 };
-    if (this.ended) return { state: 'ended', position: this.last.position, duration: this.last.duration };
+    // "Next" on the Apple TV remote: report the item as finished so Chew Player moves on.
+    if (this.ended || this.wantsNext) { this.wantsNext = false; return { state: 'ended', position: this.last.position, duration: this.last.duration }; }
     if (this.error) { const message = this.error; this.error = null; throw new Error(message); }
     const state = this.last.state === 'choosing' ? 'connecting' : this.last.state;
     return { state, position: this.last.position || 0, duration: this.last.duration || 0 };

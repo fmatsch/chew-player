@@ -2,7 +2,7 @@
 // is driven exactly like QuickTime or Safari would drive it. Chew Player starts this helper and
 // talks to it with one JSON object per line:
 //
-//   stdin  ← {"cmd":"load","url":"…","start":12.5,"title":"…","device":"Heimkino"}
+//   stdin  ← {"cmd":"load","url":"…","start":12.5,"title":"…","subtitle":"…","artwork":"/path.jpg","device":"Heimkino"}
 //            {"cmd":"play"} {"cmd":"pause"} {"cmd":"seek","t":42} {"cmd":"pick"} {"cmd":"stop"}
 //   stdout → {"ev":"ready"}
 //            {"ev":"status","state":"choosing|buffering|playing|paused","position":…,"duration":…,"external":true}
@@ -11,6 +11,7 @@
 import AppKit
 import AVFoundation
 import AVKit
+import MediaPlayer
 
 func emit(_ obj: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: obj), var line = String(data: data, encoding: .utf8) else { return }
@@ -26,6 +27,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var hintLabel = NSTextField(labelWithString: "")
     var startAt: Double = 0
     var started = false
+    var nowPlaying: [String: Any] = [:]
     var observers: [NSKeyValueObservation] = []
     var timer: Timer?
 
@@ -73,6 +75,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             emit(["ev": "error", "message": err])
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.report() }
+        setupRemoteCommands()
 
         DispatchQueue.global().async {
             while let line = readLine() {
@@ -96,6 +99,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             player.pause()
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
             titleLabel.stringValue = (msg["title"] as? String) ?? "Chew Player"
+            setNowPlaying(title: msg["title"] as? String, subtitle: msg["subtitle"] as? String, artwork: msg["artwork"] as? String)
             let device = (msg["device"] as? String).map { "“\($0)”" } ?? "your Apple TV"
             hintLabel.stringValue = "Choose \(device) in the AirPlay menu."
             if player.isExternalPlaybackActive { begin() } else { showPicker() }
@@ -108,6 +112,8 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "stop":
             player.pause()
             player.replaceCurrentItem(with: nil)
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             NSApp.terminate(nil)
         default: break
         }
@@ -149,6 +155,44 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600)) { _ in self.player.play() }
     }
 
+    // The Apple TV (and the Mac's Now Playing menu) show what's in the Now Playing center.
+    func setNowPlaying(title: String?, subtitle: String?, artwork: String?) {
+        var info: [String: Any] = [MPMediaItemPropertyTitle: title ?? "Chew Player", MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue]
+        if let subtitle, !subtitle.isEmpty { info[MPMediaItemPropertyArtist] = subtitle }
+        if let artwork, let image = NSImage(contentsOfFile: artwork) {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        }
+        nowPlaying = info
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    func updateNowPlaying(position: Double, duration: Double, playing: Bool) {
+        guard !nowPlaying.isEmpty else { return }
+        nowPlaying[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
+        nowPlaying[MPNowPlayingInfoPropertyPlaybackRate] = playing ? 1.0 : 0.0
+        if duration > 0 { nowPlaying[MPMediaItemPropertyPlaybackDuration] = duration }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlaying
+        MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
+    }
+
+    // Play/pause/seek from the Apple TV remote or the Mac's media keys.
+    func setupRemoteCommands() {
+        let c = MPRemoteCommandCenter.shared()
+        c.playCommand.addTarget { [weak self] _ in self?.player.play(); return .success }
+        c.pauseCommand.addTarget { [weak self] _ in self?.player.pause(); return .success }
+        c.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let p = self?.player else { return .commandFailed }
+            if p.timeControlStatus == .paused { p.play() } else { p.pause() }
+            return .success
+        }
+        c.changePlaybackPositionCommand.addTarget { [weak self] e in
+            guard let e = e as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            self?.player.seek(to: CMTime(seconds: e.positionTime, preferredTimescale: 600))
+            return .success
+        }
+        c.nextTrackCommand.addTarget { _ in emit(["ev": "next"]); return .success }
+    }
+
     func report() {
         let item = player.currentItem
         var state = "choosing"
@@ -162,6 +206,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let err = item?.error { emit(["ev": "error", "message": err.localizedDescription]) }
         let pos = player.currentTime().seconds
         let dur = item?.duration.seconds ?? 0
+        if started { updateNowPlaying(position: pos.isFinite ? pos : 0, duration: dur.isFinite ? dur : 0, playing: state == "playing") }
         emit(["ev": "status", "state": state, "position": pos.isFinite ? pos : 0, "duration": dur.isFinite ? dur : 0, "external": player.isExternalPlaybackActive])
     }
 

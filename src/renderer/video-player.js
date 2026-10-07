@@ -60,6 +60,7 @@ export class VideoPlayer {
     $('#v-title').textContent = item.type === 'episode' ? item.show : item.title;
     $('#v-sub').textContent = item.type === 'episode' ? `Season ${item.season} · Episode ${item.episode} · ${item.title}` : [item.year, item.genre].filter(Boolean).join(' · ');
     $('#v-next').hidden = this.index >= this.queue.length - 1;
+    this.updateMediaSession();
     if (this.remote) { this.onCast?.('load', { item, at }); this.renderControls(); return; }
     this.load(item.playback === 'native' ? 'native' : item.playback, at, true);
   }
@@ -79,6 +80,18 @@ export class VideoPlayer {
     this.applySubtitle();
     if (autoplay) this.video.play().catch(() => {});
     this.renderControls();
+  }
+
+  // The Mac's Now Playing menu, media keys and AirPlay receivers show the video, not the last song.
+  updateMediaSession() {
+    if (!('mediaSession' in navigator) || !this.item) return;
+    const it = this.item;
+    const art = it.poster || it.still;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: it.title || '',
+      artist: it.type === 'episode' ? `${it.show} · S${it.season}E${String(it.episode).padStart(2, '0')}` : [it.year, it.genre].filter(Boolean).join(' · '),
+      artwork: art ? [{ src: coverUrl(art), sizes: '600x900' }] : [],
+    });
   }
 
   // Hide the big view but keep playing on the TV (casting); attach() brings it back.

@@ -49,7 +49,7 @@ export function initVideo(app) {
     chew,
     getItem: (id) => V.byId.get(id),
     onOpen: () => app.pauseMusic(),
-    onClose: () => { load().then(() => app.render(true)); },
+    onClose: () => { app.restoreMediaSession?.(); load().then(() => app.render(true)); },
     onCast: (action, arg) => app.castVideo(action, arg),
   });
   player.setVolume(S.settings.videoVolume ?? 0.8);
