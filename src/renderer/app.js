@@ -1337,6 +1337,7 @@ async function chooseDevice(kind) {
     items.push({ type: 'separator' }, { label: 'Looking for TVs and receivers…', enabled: false });
     if (S.info.platform === 'darwin') items.push({ id: 'perm', label: 'No TV? Check “Local Network” Permission…' });
   }
+  if (kind === 'video' && S.info.platform === 'darwin') items.push({ type: 'separator' }, { id: 'quicktime', label: 'QuickTime Player (AirPlay)…' });
   items.push({ type: 'separator' }, { id: 'manual', label: 'Connect by IP Address…' }, { id: 'help', label: 'Apple TV, Android TV & Fire TV help…' });
   const choice = await chew.contextMenu(items);
   if (choice === 'help') { showCastHelp(); return null; }
@@ -1392,6 +1393,22 @@ async function castVideo(action, arg) {
       vp.attach();
       vp.load(vp.item.playback === 'native' ? 'native' : vp.item.playback, at, true);
       renderRemote();
+      return;
+    }
+    if (choice === 'quicktime') {
+      const at = cast.status.active ? cast.status.position : vp.time;
+      if (cast.status.active) await chew.cast.control('stop');
+      vp.setRemote(null);
+      vp.video.pause();
+      toast('Opening in QuickTime Player…');
+      try {
+        await chew.cast.quicktime({ id: vp.item.id, start: at, audio: vp.audioIndex, subtitle: vp.subIndex });
+        chew.video.progress(vp.item.id, at, vp.duration);
+        vp.close();
+        toast('In QuickTime, click the AirPlay button and choose your Apple TV');
+      } catch (e) {
+        toast(e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+      }
       return;
     }
     cast.deviceId = choice;

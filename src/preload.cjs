@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('chew', {
     pairStart: (id) => ipcRenderer.invoke('cast:pair-start', id),
     pairFinish: (id, pin) => ipcRenderer.invoke('cast:pair-finish', id, pin),
     addManual: (opts) => ipcRenderer.invoke('cast:add-manual', opts),
+    quicktime: (opts) => ipcRenderer.invoke('cast:quicktime', opts),
     networkSettings: () => ipcRenderer.invoke('cast:network-settings'),
   },
   onCastDevices: on('cast-devices'),

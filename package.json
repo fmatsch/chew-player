@@ -1,7 +1,7 @@
 {
   "name": "chew-player",
   "productName": "Chew Player",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "description": "A simple, folder-based music and video player for macOS and Windows.",
   "author": "fmatsch",
   "license": "MIT",
@@ -48,7 +48,8 @@
           "_airplay._tcp",
           "_googlecast._tcp",
           "_raop._tcp"
-        ]
+        ],
+        "NSAppleEventsUsageDescription": "Chew Player can open videos in QuickTime Player so you can send them to an Apple TV with AirPlay."
       },
       "extraResources": [
         {

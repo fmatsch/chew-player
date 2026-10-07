@@ -4,7 +4,7 @@
 
 import { EventEmitter } from 'node:events';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -259,6 +259,58 @@ export class CastManager extends EventEmitter {
     } catch (e) {
       this.status({ state: 'error', message: e.message });
     }
+  }
+
+  // macOS: hand a video to QuickTime Player (the user then picks the Apple TV there). QuickTime gets
+  // the file itself when it can play it; otherwise a stream FFmpeg prepares (remuxed or converted,
+  // in the chosen audio language, with subtitles burned in).
+  async openInQuickTime({ id, start = 0, audio = 0, subtitle = -1 }) {
+    const item = this.getVideo(id);
+    if (!item) throw new Error('Nothing to play');
+    const sub = item.subs?.[subtitle];
+    const burn = sub ? (sub.kind === 'external' ? { file: sub.path } : { file: item.path, index: sub.index }) : null;
+    const native = ['mp4', 'm4v', 'mov'].includes(ext(item.path)) && ['h264', 'hevc'].includes(item.vcodec)
+      && (!item.acodec || ['aac', 'mp3', 'ac3', 'eac3', 'alac'].includes(item.acodec)) && !burn && (audio === 0 || (item.audio?.length || 0) < 2);
+    let target;
+    let seekTo = start;
+    if (native) {
+      target = { file: item.path };
+    } else {
+      await this.server.start();
+      if (this.qtSession) this.server.stopSession(this.qtSession);
+      const mode = !burn && ['h264', 'hevc'].includes(item.vcodec) ? 'remux' : 'transcode';
+      const hls = await this.server.startHls(videoArgs(item, { start, audio, mode, burn }), null);
+      this.qtSession = hls.sid;
+      target = { url: hls.url };
+      seekTo = 0; // the stream already starts at the resume point
+    }
+    const q = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    const script = [
+      'tell application "QuickTime Player"',
+      '  activate',
+      target.file ? `  set d to open POSIX file ${q(target.file)}` : `  open URL ${q(target.url)}`,
+      target.file ? '' : '  delay 1',
+      target.file ? '' : '  set d to document 1',
+      '  repeat 50 times',
+      '    try',
+      '      if (duration of d) > 0 then exit repeat',
+      '    end try',
+      '    delay 0.1',
+      '  end repeat',
+      seekTo > 1 ? `  set current time of d to ${seekTo.toFixed(2)}` : '',
+      '  play d',
+      'end tell',
+    ].filter(Boolean).join('\n');
+    log('cast', `QuickTime: ${native ? 'file' : 'stream'} ${path.basename(item.path)} at ${Math.round(start)}s`);
+    await new Promise((resolve, reject) => {
+      execFile('/usr/bin/osascript', ['-e', script], { timeout: 30000 }, (err, _out, stderr) => {
+        if (!err) return resolve();
+        const msg = String(stderr || err.message);
+        reject(new Error(/-1743|not authori[sz]ed/i.test(msg)
+          ? 'Chew Player may not control QuickTime Player. Allow it in System Settings › Privacy & Security › Automation.'
+          : `QuickTime Player: ${msg.trim().split('\n').pop()}`));
+      });
+    });
   }
 
   // Start the current item again at the same spot (e.g. after the AirPlay transfer setting changed).
