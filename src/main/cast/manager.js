@@ -119,7 +119,7 @@ export class CastManager extends EventEmitter {
       const media = await this.prepare(device, kind, item, start, audio, subtitle);
       this.session.offset = media.offset;
       log('cast', `play on ${device.name} (${device.protocol} ${device.host})`, { kind, file: path.basename(item.path), codec: item.vcodec || item.codec, stream: media.hls ? 'hls' : media.contentType === 'video/mp2t' ? 'ts' : 'direct', url: media.url.replace(/\/[0-9a-f]{24}\//, '/<token>/'), start });
-      await client.load(media);
+      await client.load({ ...media, duration: item.duration || 0 });
       this.session.state = 'buffering';
       this.status();
       this.startPolling();
@@ -139,7 +139,13 @@ export class CastManager extends EventEmitter {
   }
 
   connect(device) {
-    if (device.protocol === 'airplay') return new AirPlayClient(device, this.creds()[device.id]);
+    if (device.protocol === 'airplay') {
+      return new AirPlayClient(device, this.creds()[device.id], {
+        server: this.server,
+        preferred: this.creds()[`${device.id}#play`] ?? 0,
+        remember: (v) => this.saveCreds(`${device.id}#play`, v),
+      });
+    }
     if (device.protocol === 'cast') return new GoogleCastDevice(device);
     return new DlnaDevice(device);
   }
@@ -276,12 +282,45 @@ export class CastManager extends EventEmitter {
 
 // AirPlay behind the same interface as the other receivers.
 class AirPlayClient {
-  constructor(device, creds) {
+  constructor(device, creds, { server, preferred = 0, remember } = {}) {
     this.dev = new AirPlayDevice({ host: device.host, port: device.port }, creds || null);
+    this.server = server;
+    this.preferred = Number(preferred) || 0;
+    this.remember = remember;
   }
 
   open() { return this.dev.open(); }
-  load({ url, start = 0, duration }) { this.loaded = Date.now(); return this.dev.play(url, start, duration); }
+
+  // Send /play and wait until the Apple TV really fetches the video. If it doesn't, try the next
+  // form of the request — tvOS versions differ — and remember the one that works for this device.
+  async load({ url, start = 0, duration = 0 }) {
+    const n = AirPlayDevice.PLAY_VARIANTS;
+    const order = [this.preferred, ...Array.from({ length: n }, (_, i) => i).filter((i) => i !== this.preferred)];
+    const urlPath = new URL(url).pathname;
+    for (const variant of order) {
+      let fetched = false;
+      const onFetch = (u) => { if (u.split('?')[0] === urlPath || u.startsWith(urlPath.replace(/index\.m3u8$/, ''))) fetched = true; };
+      this.server?.on('fetch', onFetch);
+      try {
+        this.loaded = Date.now();
+        await this.dev.play(url, start, duration, variant);
+        for (let i = 0; i < 40 && !fetched; i++) {
+          await new Promise((r) => setTimeout(r, 200));
+          if (i % 5 === 4) { const s = await this.dev.status().catch(() => null); if (s?.ready) fetched = true; }
+        }
+      } finally {
+        this.server?.off('fetch', onFetch);
+      }
+      if (fetched) {
+        log('airplay', `variant ${variant} works for this Apple TV`);
+        if (variant !== this.preferred) { this.preferred = variant; this.remember?.(variant); }
+        return;
+      }
+      log('airplay', `variant ${variant}: the Apple TV did not fetch the video, trying the next one`);
+      await this.dev.stop();
+    }
+    throw new Error('The Apple TV accepted the video but didn’t start it. Details are in chew.log');
+  }
 
   async status() {
     const s = await this.dev.status();

@@ -7,6 +7,7 @@
 //   /<token>/ts/<sid>           a live MPEG-TS stream (DLNA renderers)
 
 import http from 'node:http';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -33,8 +34,9 @@ const CORS = {
 // DLNA renderers look for these headers before they agree to play.
 const DLNA = { 'transferMode.dlna.org': 'Streaming', 'contentFeatures.dlna.org': 'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000' };
 
-export class CastServer {
+export class CastServer extends EventEmitter {
   constructor(tmpRoot) {
+    super();
     this.token = crypto.randomBytes(12).toString('hex');
     this.files = new Map();     // key → absolute path
     this.sessions = new Map();  // sid → { dir, proc } | { args }
@@ -46,6 +48,7 @@ export class CastServer {
     await fsp.rm(this.tmpRoot, { recursive: true, force: true }).catch(() => {});
     await fsp.mkdir(this.tmpRoot, { recursive: true });
     this.server = http.createServer((req, res) => this.handle(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }));
+    this.server.on('connection', (sock) => log('server', `connection from ${sock.remoteAddress}`));
     await new Promise((resolve) => this.server.listen(0, '0.0.0.0', resolve));
     this.port = this.server.address().port;
   }
@@ -115,7 +118,9 @@ export class CastServer {
   stopAll() { for (const sid of [...this.sessions.keys()]) this.stopSession(sid); }
 
   async handle(req, res) {
-    res.on('finish', () => log('server', `${req.socket.remoteAddress} ${req.method} ${req.url.replace(this.token, '<token>')} → ${res.statusCode}${req.headers.range ? ` (${req.headers.range})` : ''}`));
+    log('server', `${req.socket.remoteAddress} ${req.method} ${req.url.replace(this.token, '<token>')}${req.headers.range ? ` (${req.headers.range})` : ''} · ${req.headers['user-agent'] || '-'}`);
+    res.on('finish', () => log('server', `→ ${res.statusCode}`));
+    this.emit('fetch', req.url);
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
     const parts = decodeURIComponent(new URL(req.url, 'http://x').pathname).split('/').filter(Boolean);
     if (parts[0] !== this.token) { res.writeHead(404); res.end(); return; }

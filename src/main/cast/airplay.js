@@ -164,6 +164,7 @@ class Connection {
   request(method, path, { headers = {}, body = Buffer.alloc(0), timeout = 10000 } = {}) {
     if (this.closed) return Promise.reject(new Error('Connection closed'));
     const h = {
+      Host: `${this.host}:${this.port}`,
       'User-Agent': 'AirPlay/550.10',
       'Content-Length': body.length,
       'X-Apple-Session-ID': this.sessionId,
@@ -296,8 +297,14 @@ export class AirPlayDevice {
     c.enableEncryption(shared);
   }
 
-  // The /play request mirrors what iOS sends; tvOS is picky about some of these fields.
-  async play(url, startSeconds = 0) {
+  // tvOS versions differ in which form of /play they act on, so there are three:
+  //   0 – what current iOS sends (binary plist with session/telemetry fields)
+  //   1 – the classic AirPlay video request (binary plist, fractional start position)
+  //   2 – the original text/parameters form
+  static PLAY_VARIANTS = 3;
+
+  async play(url, startSeconds = 0, duration = 0, variant = 0) {
+    if (variant === 1 || variant === 2) return this.playClassic(url, startSeconds, duration, variant);
     const mac = Object.values(os.networkInterfaces()).flat().find((i) => i && !i.internal && i.mac && i.mac !== '00:00:00:00:00:00')?.mac || '00:00:00:00:00:00';
     const body = encodeBplist({
       'Content-Location': url,
@@ -325,7 +332,7 @@ export class AirPlayDevice {
     const headers = { 'Content-Type': 'application/x-apple-binary-plist', 'X-Apple-ProtocolVersion': '1', 'X-Apple-Stream-ID': '1' };
     for (let attempt = 1; ; attempt++) {
       const r = await this.conn.request('POST', '/play', { headers, body, timeout: 20000 });
-      log('airplay', `/play → HTTP ${r.status}`, r.body.length ? r.body.toString('utf8').slice(0, 200) : '');
+      log('airplay', `/play (variant 0) → HTTP ${r.status}`, r.body.length ? r.body.toString('utf8').slice(0, 200) : '');
       // tvOS sometimes answers 500 to the first attempt; iOS simply retries.
       if (r.status === 500 && attempt < 3) { await new Promise((res) => setTimeout(res, 1000)); continue; }
       if (r.status >= 300) throw new Error(`Apple TV refused to play (HTTP ${r.status})`);
@@ -333,9 +340,27 @@ export class AirPlayDevice {
     }
   }
 
+  async playClassic(url, startSeconds, duration, variant) {
+    const fraction = duration > 0 ? Math.min(0.99, Math.max(0, startSeconds / duration)) : 0;
+    const body = variant === 1
+      ? encodeBplist({ 'Content-Location': url, 'Start-Position': fraction, 'X-Apple-Session-ID': this.sessionId })
+      : Buffer.from(`Content-Location: ${url}\nStart-Position: ${fraction.toFixed(6)}\n`);
+    const headers = {
+      'User-Agent': 'MediaControl/1.0',
+      'Content-Type': variant === 1 ? 'application/x-apple-binary-plist' : 'text/parameters',
+    };
+    const r = await this.conn.request('POST', '/play', { headers, body, timeout: 20000 });
+    log('airplay', `/play (variant ${variant}) → HTTP ${r.status}`, r.body.length ? r.body.toString('utf8').slice(0, 200) : '');
+    if (r.status >= 300) throw new Error(`Apple TV refused to play (HTTP ${r.status})`);
+  }
+
   async status() {
     const r = await this.conn.request('GET', '/playback-info');
-    if (r.status !== 200 || !r.body.length) { log('airplay', `/playback-info → HTTP ${r.status}, empty`); return { position: 0, duration: 0, rate: 0, ready: false }; }
+    if (r.status !== 200 || !r.body.length) {
+      const key = `HTTP ${r.status}, empty`;
+      if (key !== this.lastInfo) { this.lastInfo = key; log('airplay', `/playback-info → ${key}`); }
+      return { position: 0, duration: 0, rate: 0, ready: false };
+    }
     const info = decodeBplist(r.body);
     // Log only when something other than the position changes.
     const brief = { duration: info.duration, rate: info.rate, readyToPlay: info.readyToPlay, bufferEmpty: info.playbackBufferEmpty, error: info.error ?? info.errorCode };
