@@ -36,6 +36,9 @@ jobs:
       - run: npm ci
         env:
           npm_config_arch: ${{ matrix.arch }}
+      - name: Build native AirPlay helper (macOS)
+        if: runner.os == 'macOS'
+        run: npm run build:native
       - run: npx electron-builder ${{ matrix.args }} --publish never
       - uses: actions/upload-artifact@v4
         with:

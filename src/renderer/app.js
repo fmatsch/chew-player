@@ -1413,8 +1413,13 @@ chew.onCastStatus((st) => {
       else { chew.cast.control('stop'); vp.remote = null; vp.close(); }
     }
   } else if (vp.remote && !st.active) {
+    // Casting stopped (device chooser cancelled, TV disconnected): continue here, paused at the same spot.
+    const at = prev.position || vp.time;
     vp.setRemote(null);
-    if (vp.stage.hidden) vp.close(); // casting ended while browsing the library
+    if (vp.item) {
+      vp.attach();
+      vp.load(vp.item.playback === 'native' ? 'native' : vp.item.playback, at, false);
+    }
   }
   if (st.active && st.kind === 'audio' && st.state === 'ended' && prev.state !== 'ended') castMusicStep(1, true);
   if (st.active || prev.active) renderRemote();

@@ -1,7 +1,7 @@
 {
   "name": "chew-player",
   "productName": "Chew Player",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "A simple, folder-based music and video player for macOS and Windows.",
   "author": "fmatsch",
   "license": "MIT",
@@ -13,8 +13,9 @@
     "start": "electron .",
     "icons": "node scripts/build-icons.js",
     "dist": "electron-builder --publish never",
-    "dist:mac": "electron-builder --mac --publish never",
-    "dist:win": "electron-builder --win --publish never"
+    "dist:mac": "npm run build:native && electron-builder --mac --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "build:native": "sh scripts/build-airplay-helper.sh"
   },
   "build": {
     "appId": "io.github.fmatsch.chewplayer",
@@ -48,7 +49,13 @@
           "_googlecast._tcp",
           "_raop._tcp"
         ]
-      }
+      },
+      "extraResources": [
+        {
+          "from": "build/native/chew-airplay",
+          "to": "chew-airplay"
+        }
+      ]
     },
     "win": {
       "icon": "build/icon.png",

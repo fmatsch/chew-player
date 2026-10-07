@@ -3,7 +3,10 @@
 // position in sync and reports status to the renderer.
 
 import { EventEmitter } from 'node:events';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import { Discovery } from './discovery.js';
@@ -76,7 +79,10 @@ export class CastManager extends EventEmitter {
   devices() {
     // Hide a manually added TV once Bonjour finds the same one.
     const found = new Set(this.discovery.list().filter((d) => !d.manual).map((d) => `${d.protocol}:${d.host}`));
-    return this.discovery.list().filter((d) => !d.manual || !found.has(`${d.protocol}:${d.host}`)).map(({ id, protocol, name, model, video }) => ({ id, protocol, name, model, video: video !== false }));
+    const list = this.discovery.list().filter((d) => !d.manual || !found.has(`${d.protocol}:${d.host}`));
+    // macOS: the system AirPlay menu also reaches AirPlay TVs (Samsung, LG, …) we don't discover ourselves.
+    if (nativeAirPlayHelper()) list.push({ id: 'airplay:native', protocol: 'airplay', name: 'AirPlay Menu…', native: true, video: true });
+    return list.map(({ id, protocol, name, model, video }) => ({ id, protocol, name, model, video: video !== false }));
   }
 
   refresh() { this.discovery.refresh(); }
@@ -103,7 +109,9 @@ export class CastManager extends EventEmitter {
   // ---------------------------------------------------------------- play
 
   async play({ deviceId, kind, id, start = 0, audio = 0, subtitle = -1 }) {
-    const device = this.discovery.devices.get(deviceId);
+    const device = deviceId === 'airplay:native'
+      ? { id: 'airplay:native', protocol: 'airplay', name: 'AirPlay', native: true, host: null }
+      : this.discovery.devices.get(deviceId);
     if (!device) throw new Error('That device is no longer available');
     await this.server.start();
 
@@ -147,6 +155,9 @@ export class CastManager extends EventEmitter {
   }
 
   connect(device) {
+    // macOS: hand AirPlay to the system (AVFoundation) via the native helper — it works with every
+    // tvOS version and takes care of pairing itself. Other platforms speak the protocol directly.
+    if (device.protocol === 'airplay' && nativeAirPlayHelper()) return new NativeAirPlayClient(device, this.server);
     if (device.protocol === 'airplay') {
       return new AirPlayClient(device, this.credsFor(device), {
         server: this.server,
@@ -166,7 +177,7 @@ export class CastManager extends EventEmitter {
     const proto = device.protocol;
 
     if (kind === 'audio') {
-      if (DIRECT[proto].audio(item)) return { ...meta, kind, url: this.server.fileUrl(item.path, host), contentType: mimeOf(item.path), start, offset: 0 };
+      if (DIRECT[proto].audio(item)) return { ...meta, kind, url: this.server.fileUrl(item.path, host), filePath: item.path, contentType: mimeOf(item.path), start, offset: 0 };
       // Convert to AAC on the fly as a short HLS stream (works on all receivers that do HLS; DLNA gets MPEG-TS).
       const args = ['-v', 'error', '-nostdin', ...(start > 0 ? ['-ss', String(start)] : []), '-i', item.path, '-map', '0:a:0', '-vn', '-c:a', 'aac', '-b:a', '256k'];
       if (proto === 'dlna') { const ts = this.server.liveTs(args, host); this.session.sid = ts.sid; return { ...meta, kind, url: ts.url, contentType: 'video/mp2t', offset: start }; }
@@ -179,7 +190,7 @@ export class CastManager extends EventEmitter {
     const sub = item.subs?.[subtitle];
     const burn = sub ? (sub.kind === 'external' ? { file: sub.path } : { file: item.path, index: sub.index }) : null;
     if (!burn && (audio === 0 || (item.audio?.length || 0) < 2) && DIRECT[proto].video(item)) {
-      return { ...meta, kind, url: this.server.fileUrl(item.path, host), contentType: mimeOf(item.path) === 'video/quicktime' ? 'video/mp4' : mimeOf(item.path), start, offset: 0 };
+      return { ...meta, kind, url: this.server.fileUrl(item.path, host), filePath: item.path, contentType: mimeOf(item.path) === 'video/quicktime' ? 'video/mp4' : mimeOf(item.path), start, offset: 0 };
     }
     const copyable = proto === 'airplay' ? ['h264', 'hevc'] : ['h264'];
     const mode = !burn && copyable.includes(item.vcodec) ? 'remux' : 'transcode';
@@ -214,6 +225,7 @@ export class CastManager extends EventEmitter {
         if (st.state === 'playing') s.played = true;
         // Some receivers report "idle" once a file ends; treat that as the end once it has played.
         const ended = st.state === 'ended' || (st.state === 'idle' && s.played);
+        if (st.state === 'closed') { log('cast', `${s.device.name}: AirPlay closed`); this.stop(); return; }
         if (st.state !== s.lastLogged) { s.lastLogged = st.state; log('cast', `${s.device.name}: ${st.state} at ${Math.round(st.position)}s`); }
         s.state = ended ? 'ended' : st.state;
         s.failures = 0;
@@ -288,6 +300,64 @@ export class CastManager extends EventEmitter {
     this.server.close();
     this.discovery.stop();
   }
+}
+
+// Path of the native macOS AirPlay helper (bundled in the app, or built locally during development).
+export function nativeAirPlayHelper() {
+  if (process.platform !== 'darwin' || process.env.CHEW_PROTOCOL_AIRPLAY) return null;
+  const candidates = [
+    process.resourcesPath && path.join(process.resourcesPath, 'chew-airplay'),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../build/native/chew-airplay'),
+  ].filter(Boolean);
+  return candidates.find((p) => existsSync(p)) || null;
+}
+
+class NativeAirPlayClient {
+  constructor(device, server) {
+    this.device = device;
+    this.server = server;
+    this.last = { state: 'choosing', position: 0, duration: 0 };
+  }
+
+  open() {
+    return new Promise((resolve, reject) => {
+      this.proc = spawn(nativeAirPlayHelper(), [], { stdio: ['pipe', 'pipe', 'ignore'] });
+      this.proc.on('error', reject);
+      this.proc.on('exit', () => { this.exited = true; });
+      createInterface({ input: this.proc.stdout }).on('line', (line) => {
+        let ev;
+        try { ev = JSON.parse(line); } catch { return; }
+        if (ev.ev === 'ready') resolve();
+        else if (ev.ev === 'status') this.last = ev;
+        else if (ev.ev === 'ended') this.ended = true;
+        else if (ev.ev === 'closed') this.closed = true;
+        else if (ev.ev === 'error') { this.error = ev.message; log('airplay', `macOS AirPlay error: ${ev.message}`); }
+      });
+      setTimeout(() => reject(new Error('The AirPlay helper did not start')), 8000);
+    });
+  }
+
+  send(obj) { if (!this.exited) this.proc.stdin.write(`${JSON.stringify(obj)}\n`); }
+
+  async load({ url, title, start = 0, filePath }) {
+    // Files the Apple TV can play as they are go straight from disk; AVFoundation streams them itself.
+    this.send({ cmd: 'load', url: filePath || url, start, title, device: this.device.native ? undefined : this.device.name });
+    log('airplay', `handed to macOS AirPlay${this.device.native ? '' : ` (choose “${this.device.name}”)`}`);
+  }
+
+  async status() {
+    if (this.closed || this.exited) return { state: 'closed', position: 0, duration: 0 };
+    if (this.ended) return { state: 'ended', position: this.last.position, duration: this.last.duration };
+    if (this.error) { const message = this.error; this.error = null; throw new Error(message); }
+    const state = this.last.state === 'choosing' ? 'connecting' : this.last.state;
+    return { state, position: this.last.position || 0, duration: this.last.duration || 0 };
+  }
+
+  play() { this.send({ cmd: 'play' }); }
+  pause() { this.send({ cmd: 'pause' }); }
+  seek(t) { this.send({ cmd: 'seek', t }); }
+  stop() { this.send({ cmd: 'stop' }); }
+  close() { if (!this.exited) { this.send({ cmd: 'stop' }); setTimeout(() => this.proc.kill(), 1500); } }
 }
 
 // AirPlay behind the same interface as the other receivers.
