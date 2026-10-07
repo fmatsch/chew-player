@@ -14,6 +14,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { pipeline } from 'node:stream';
 import { ffmpegPath } from '../ffmpeg.js';
 import { log } from '../log.js';
 
@@ -48,7 +49,15 @@ export class CastServer extends EventEmitter {
     await fsp.rm(this.tmpRoot, { recursive: true, force: true }).catch(() => {});
     await fsp.mkdir(this.tmpRoot, { recursive: true });
     this.server = http.createServer((req, res) => this.handle(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }));
-    this.server.on('connection', (sock) => log('server', `connection from ${sock.remoteAddress}`));
+    // Players keep connections open and pause reading while their buffer is full; Node's default
+    // 5 s keep-alive timeout would cut them off and force a reconnect.
+    this.server.keepAliveTimeout = 120000;
+    this.server.headersTimeout = 125000;
+    this.server.requestTimeout = 0;
+    this.server.on('connection', (sock) => {
+      sock.setNoDelay(true);
+      log('server', `connection from ${sock.remoteAddress}`);
+    });
     await new Promise((resolve) => this.server.listen(0, '0.0.0.0', resolve));
     this.port = this.server.address().port;
   }
@@ -119,7 +128,10 @@ export class CastServer extends EventEmitter {
 
   async handle(req, res) {
     log('server', `${req.socket.remoteAddress} ${req.method} ${req.url.replace(this.token, '<token>')}${req.headers.range ? ` (${req.headers.range})` : ''} · ${req.headers['user-agent'] || '-'}`);
-    res.on('finish', () => log('server', `→ ${res.statusCode}`));
+    const t0 = Date.now();
+    const sent0 = req.socket.bytesWritten;
+    res.on('finish', () => log('server', `→ ${res.statusCode} done, ${((req.socket.bytesWritten - sent0) / 1048576).toFixed(1)} MB in ${Date.now() - t0} ms`));
+    res.on('close', () => { if (!res.writableFinished) log('server', `→ ${res.statusCode} closed by the client after ${((req.socket.bytesWritten - sent0) / 1048576).toFixed(1)} MB, ${Date.now() - t0} ms`); });
     this.emit('fetch', req.url);
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
     const parts = decodeURIComponent(new URL(req.url, 'http://x').pathname).split('/').filter(Boolean);
@@ -157,8 +169,12 @@ export class CastServer extends EventEmitter {
   }
 
   async sendFile(req, res, file) {
-    const { size } = await fsp.stat(file);
-    const headers = { 'Content-Type': mimeOf(file), 'Accept-Ranges': 'bytes', ...CORS, ...DLNA };
+    const { size, mtime } = await fsp.stat(file);
+    // ETag/Last-Modified let the player trust and reuse what it has already buffered.
+    const headers = {
+      'Content-Type': mimeOf(file), 'Accept-Ranges': 'bytes', ...CORS, ...DLNA,
+      'Last-Modified': mtime.toUTCString(), ETag: `"${size.toString(16)}-${Math.floor(mtime.getTime() / 1000).toString(16)}"`,
+    };
     const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
     let start = 0;
     let end = size - 1;
@@ -172,7 +188,8 @@ export class CastServer extends EventEmitter {
       res.writeHead(200, { ...headers, 'Content-Length': size });
     }
     if (req.method === 'HEAD') { res.end(); return; }
-    fs.createReadStream(file, { start, end }).pipe(res);
+    // pipeline() closes the file as soon as the player drops the connection.
+    pipeline(fs.createReadStream(file, { start, end, highWaterMark: 1 << 20 }), res, () => {});
   }
 
   close() {
