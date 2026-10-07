@@ -34,6 +34,9 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var beganAt: Date?
     var everPlayed = false
     var observers: [NSKeyValueObservation] = []
+    var cancelButton: NSButton!
+    var controls: NSStackView!
+    var playPause: NSButton!
     var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -50,6 +53,14 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         picker.setRoutePickerButtonColor(NSColor(red: 1, green: 0.31, blue: 0.48, alpha: 1), for: .normal)
         picker.setRoutePickerButtonColor(NSColor(red: 1, green: 0.31, blue: 0.48, alpha: 1), for: .active)
         let button = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancelButton = button
+        // Mini-player controls, shown while the TV plays.
+        playPause = NSButton(title: "Pause", target: self, action: #selector(togglePlay))
+        let stop = NSButton(title: "Stop", target: self, action: #selector(cancel))
+        controls = NSStackView(views: [playPause, stop])
+        controls.orientation = .horizontal
+        controls.spacing = 8
+        controls.isHidden = true
         // A real video output, like QuickTime's player view. Without one, macOS may choose a different
         // (worse) way to send the video to the TV.
         playerView.player = player
@@ -58,7 +69,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         playerView.translatesAutoresizingMaskIntoConstraints = false
         playerView.widthAnchor.constraint(equalToConstant: 160).isActive = true
         playerView.heightAnchor.constraint(equalToConstant: 90).isActive = true
-        let stack = NSStackView(views: [playerView, picker, titleLabel, hintLabel, button])
+        let stack = NSStackView(views: [playerView, picker, titleLabel, hintLabel, button, controls])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 10
@@ -119,8 +130,8 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let device = (msg["device"] as? String).map { "“\($0)”" } ?? "your Apple TV"
             hintLabel.stringValue = "Choose \(device) in the AirPlay menu."
             if player.isExternalPlaybackActive { begin() } else { showPicker() }
-        case "play": player.play(); publishNowPlaying(playing: true, reason: "play")
-        case "pause": player.pause(); publishNowPlaying(playing: false, reason: "pause")
+        case "play": player.play(); playPause?.title = "Pause"; publishNowPlaying(playing: true, reason: "play")
+        case "pause": player.pause(); playPause?.title = "Play"; publishNowPlaying(playing: false, reason: "pause")
         case "seek":
             let t = (msg["t"] as? Double) ?? 0
             player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
@@ -172,7 +183,7 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keepAwake(true)
         beganAt = Date()
         everPlayed = false
-        window.orderOut(nil)
+        enterMiniMode()
         player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600)) { _ in
             self.player.play()
             self.publishNowPlaying(playing: true, at: self.startAt, reason: "start")
@@ -272,13 +283,40 @@ final class Helper: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
+    // Stay visible as a small floating mini player (like QuickTime keeps its window): macOS treats an
+    // app without visible windows as background work and lowers the priority of the AirPlay transfer
+    // it requests, which showed as dropouts every few seconds on the TV.
+    func enterMiniMode() {
+        picker.isHidden = true
+        hintLabel.stringValue = "Playing on your TV"
+        cancelButton.isHidden = true
+        controls.isHidden = false
+        playerView.isHidden = true
+        let size = NSSize(width: 300, height: 110)
+        if let screen = NSScreen.main?.visibleFrame {
+            window.setFrame(NSRect(x: screen.maxX - size.width - 20, y: screen.minY + 20, width: size.width, height: size.height), display: true)
+        }
+        window.level = .floating
+        window.orderFrontRegardless()
+    }
+
+    @objc func togglePlay() {
+        let play = player.timeControlStatus == .paused
+        if play { player.play() } else { player.pause() }
+        playPause.title = play ? "Pause" : "Play"
+        publishNowPlaying(playing: play, reason: play ? "mini play" : "mini pause")
+        report()
+    }
+
     @objc func cancel() {
         emit(["ev": "closed"])
         NSApp.terminate(nil)
     }
 
+    // Closing the window (chooser or mini player) ends AirPlay playback.
     func windowWillClose(_ notification: Notification) {
-        if !started { emit(["ev": "closed"]); NSApp.terminate(nil) }
+        emit(["ev": "closed"])
+        NSApp.terminate(nil)
     }
 }
 

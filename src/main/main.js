@@ -384,6 +384,7 @@ app.whenReady().then(() => {
   videoLib.on('fetch', (p) => send('fetch-progress', { ...p, source: 'video' }));
   cast = new CastManager({
     dataDir: app.getPath('userData'),
+    settings: () => library.data.settings,
     getVideo: (id) => (videoLib.data.items[id] ? videoLib.view(videoLib.data.items[id]) : null),
     getTrack: (id) => (library.data.tracks[id] ? library.view(library.data.tracks[id]) : null),
   });

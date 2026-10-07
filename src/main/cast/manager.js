@@ -36,8 +36,9 @@ const DIRECT = {
 };
 
 export class CastManager extends EventEmitter {
-  constructor({ dataDir, getVideo, getTrack, coverUrl }) {
+  constructor({ dataDir, getVideo, getTrack, coverUrl, settings = () => ({}) }) {
     super();
+    this.settings = settings;
     this.getVideo = getVideo;
     this.getTrack = getTrack;
     this.coverUrl = coverUrl;
@@ -157,7 +158,7 @@ export class CastManager extends EventEmitter {
   connect(device) {
     // macOS: hand AirPlay to the system (AVFoundation) via the native helper — it works with every
     // tvOS version and takes care of pairing itself. Other platforms speak the protocol directly.
-    if (device.protocol === 'airplay' && nativeAirPlayHelper()) return new NativeAirPlayClient(device, this.server);
+    if (device.protocol === 'airplay' && nativeAirPlayHelper()) return new NativeAirPlayClient(device, this.server, () => this.settings().airplayTransfer || 'mac');
     if (device.protocol === 'airplay') {
       return new AirPlayClient(device, this.credsFor(device), {
         server: this.server,
@@ -313,9 +314,10 @@ export function nativeAirPlayHelper() {
 }
 
 class NativeAirPlayClient {
-  constructor(device, server) {
+  constructor(device, server, transfer = () => 'mac') {
     this.device = device;
     this.server = server;
+    this.transfer = transfer;
     this.last = { state: 'choosing', position: 0, duration: 0 };
   }
 
@@ -349,7 +351,13 @@ class NativeAirPlayClient {
     // Hand over the local file, exactly like QuickTime does — macOS then manages the transfer to the
     // TV itself. (Giving macOS 27 a network URL instead made the picture drop out on the TV.)
     // The network URL is only the fallback, and the only option for streams FFmpeg converts on the fly.
-    this.send({ cmd: 'load', url: filePath || url, fallback: filePath ? url : undefined, start, title, subtitle, artwork: artPath || undefined, device: this.device.native ? undefined : this.device.name });
+    // Settings › Playback › AirPlay transfer: 'mac' = the Mac sends the file (like QuickTime),
+    // 'tv' = the Apple TV loads it from Chew Player's media server; the other way is the fallback.
+    const tvLoads = this.transfer() === 'tv' || !filePath;
+    const primary = tvLoads ? url : filePath;
+    const fallback = tvLoads ? filePath : url;
+    log('airplay', `transfer: ${tvLoads ? 'Apple TV loads from the network' : 'Mac sends the file'}`);
+    this.send({ cmd: 'load', url: primary, fallback: fallback || undefined, start, title, subtitle, artwork: artPath || undefined, device: this.device.native ? undefined : this.device.name });
     log('airplay', `handed to macOS AirPlay${this.device.native ? '' : ` (choose “${this.device.name}”)`}`);
   }
 
