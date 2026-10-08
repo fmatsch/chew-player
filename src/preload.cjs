@@ -58,6 +58,18 @@ contextBridge.exposeInMainWorld('chew', {
     quicktime: (opts) => ipcRenderer.invoke('cast:quicktime', opts),
     networkSettings: () => ipcRenderer.invoke('cast:network-settings'),
   },
+  exporter: {
+    formats: () => ipcRenderer.invoke('export:formats'),
+    devices: () => ipcRenderer.invoke('export:devices'),
+    chooseFolder: () => ipcRenderer.invoke('export:choose-folder'),
+    estimate: (kind, ids, format) => ipcRenderer.invoke('export:estimate', kind, ids, format),
+    start: (opts) => ipcRenderer.invoke('export:start', opts),
+    cancel: (jobId) => ipcRenderer.invoke('export:cancel', jobId),
+    eject: (mount) => ipcRenderer.invoke('export:eject', mount),
+    reveal: (dir) => ipcRenderer.invoke('export:reveal', dir),
+  },
+  onExportProgress: on('export-progress'),
+  onExportDone: on('export-done'),
   onCastDevices: on('cast-devices'),
   onCastStatus: on('cast-status'),
   video: {

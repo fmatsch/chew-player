@@ -75,6 +75,18 @@ Both work the same way: you point the app at folders, and it fills in the detail
   and keyboard shortcuts (Space, ←/→, ↑/↓, F, M, C, Shift+N, Esc).
 - **Video playlists and smart playlists**, e.g. "unwatched movies in 4K added this month".
 
+### Convert and copy to devices
+
+Right-click songs, albums, artists, folders, playlists or videos:
+
+- **Convert…** saves copies as **MP3** (320/256/192/128 kbps) or **MP4** (original quality, 1080p,
+  720p or 480p, H.264/AAC). MP3s get the library's tags (including your corrections) and the cover art.
+- **Copy to Device…** puts them on a connected **MP3 player, SD card or USB stick**, as they are or
+  converted on the way (many players can't play FLAC or M4A). You can choose Artist/Album or Show/Season
+  folders, or keep everything in one folder. Chew Player shows the size and free space first, warns about
+  the 4 GB limit of FAT32 cards, removes the hidden `._` files macOS leaves on such cards, and offers to
+  eject the device when it's done.
+
 ### Play on your TV
 
 The cast button (in the video player and in the music player bar) sends the current video or song to a TV

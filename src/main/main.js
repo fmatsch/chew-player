@@ -10,6 +10,7 @@ import { transcodeStream, ffmpegPath, videoStream, subtitleStream } from './ffmp
 import { VideoLibrary } from './video-library.js';
 import { CastManager } from './cast/manager.js';
 import { initLog, log } from './log.js';
+import { Exporter, listDevices, eject, AUDIO_FORMATS, VIDEO_FORMATS } from './export.js';
 import { Updater } from './updater.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +38,7 @@ let win = null;
 let library = null;
 let videoLib = null;
 let cast = null;
+let exporter = null;
 let updater = null;
 const pendingOpen = [];
 
@@ -291,6 +293,22 @@ function registerIpc() {
   ipcMain.handle('cast:pair-start', (_e, id) => cast.pairStart(id));
   ipcMain.handle('cast:add-manual', (_e, opts) => cast.addManual(opts));
   ipcMain.handle('cast:quicktime', (_e, opts) => cast.openInQuickTime(opts));
+
+  // ---- convert / copy to device
+  ipcMain.handle('export:formats', () => ({ audio: AUDIO_FORMATS, video: VIDEO_FORMATS }));
+  ipcMain.handle('export:devices', () => listDevices());
+  ipcMain.handle('export:choose-folder', async () => {
+    const r = await dialog.showOpenDialog(win, { title: 'Choose Destination', buttonLabel: 'Choose', properties: ['openDirectory', 'createDirectory'], defaultPath: library.data.settings.exportDir || app.getPath('music') });
+    return r.canceled ? null : r.filePaths[0];
+  });
+  ipcMain.handle('export:estimate', (_e, kind, ids, format) => ids.reduce((sum, id) => {
+    const it = kind === 'audio' ? (library.data.tracks[id] && library.view(library.data.tracks[id])) : (videoLib.data.items[id] && videoLib.view(videoLib.data.items[id]));
+    return sum + (it ? exporter.estimate(kind, it, format) : 0);
+  }, 0));
+  ipcMain.handle('export:start', (_e, opts) => exporter.start(opts));
+  ipcMain.handle('export:cancel', (_e, jobId) => exporter.cancel(jobId));
+  ipcMain.handle('export:eject', (_e, mount) => eject(mount));
+  ipcMain.handle('export:reveal', (_e, dir) => shell.openPath(dir));
   ipcMain.handle('cast:network-settings', () => shell.openExternal(isMac
     ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork'
     : 'ms-settings:privacy')),
@@ -391,6 +409,12 @@ app.whenReady().then(() => {
     getTrack: (id) => (library.data.tracks[id] ? library.view(library.data.tracks[id]) : null),
   });
   cast.on('devices', (list) => send('cast-devices', list));
+  exporter = new Exporter({
+    getTrack: (id) => (library.data.tracks[id] ? library.view(library.data.tracks[id]) : null),
+    getVideo: (id) => (videoLib.data.items[id] ? videoLib.view(videoLib.data.items[id]) : null),
+  });
+  exporter.on('progress', (p) => send('export-progress', p));
+  exporter.on('done', (d) => send('export-done', d));
   // While something plays on a TV, this process may be serving the media — keep macOS from napping it.
   let castBlocker = null;
   cast.on('status', (st) => {

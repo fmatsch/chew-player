@@ -528,3 +528,12 @@ body.mode-video .nav-group[data-for="audio"] { display: none; }
 body.remote-video .now { cursor: pointer; }
 body.remote-video .now-cover { outline: 2px solid var(--accent); outline-offset: 2px; }
 body.remote-video #btn-shuffle, body.remote-video #btn-repeat { visibility: hidden; }
+
+/* export dialog */
+.row-inline { display: flex; gap: 8px; align-items: center; }
+.row-inline select { flex: 1; min-width: 0; }
+.row-inline .btn { height: 32px; text-transform: none; letter-spacing: 0; }
+.row-inline .btn i { width: 14px; height: 14px; }
+.ex-size { margin-top: 14px; }
+.ex-size.warn { color: var(--accent); font-weight: 600; }
+.form .hint { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; }

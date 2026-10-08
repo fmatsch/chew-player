@@ -6,6 +6,7 @@ import { icon, hydrateIcons } from './icons.js';
 import { TrackTable, fmtTime } from './table.js';
 import { evaluate, describe } from './smart.js';
 import { VideoPlayer, stageHtml } from './video-player.js';
+import { openExport } from './export-ui.js';
 
 const chew = window.chew;
 
@@ -307,6 +308,8 @@ export function initVideo(app) {
       { id: 'watched', label: 'Mark as Watched' },
       { id: 'unwatched', label: 'Mark as Unwatched' },
       { label: 'Add to Playlist', submenu: app.playlistSubmenu('video') },
+      { id: 'convert', label: 'Convert…' },
+      { id: 'todevice', label: 'Copy to Device…' },
       { type: 'separator' },
       { id: 'info', label: items.length > 1 ? 'Edit Info…' : 'Get Info…' },
       { id: 'lookup', label: 'Look Up Online' },
@@ -321,6 +324,7 @@ export function initVideo(app) {
     if (c === 'pl:new') app.newPlaylist(ids, 'video');
     else if (c.startsWith('pl:')) app.addToPlaylist(c.slice(3), ids);
     if (c === 'info') openInfo(items);
+    if (c === 'convert' || c === 'todevice') openExport({ kind: 'video', items, mode: c === 'convert' ? 'convert' : 'device', settings: S.settings });
     if (c === 'lookup') { chew.video.fetch(ids); toast('Looking up info online…'); }
     if (c === 'reveal') chew.video.reveal(one.id);
     if (c === 'remove-pl') { const drop = new Set(S.table.selectedIndices()); const p = ctx.playlist; p.trackIds = p.trackIds.filter((_, i) => !drop.has(i)); chew.playlists.update(p.id, { trackIds: p.trackIds }); app.render(); }

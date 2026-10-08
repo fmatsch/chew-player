@@ -4,6 +4,7 @@ import { TrackTable, fmtTime } from './table.js';
 import { $, esc, collator, plural, coverUrl, coverDiv, sortName, toast, el } from './util.js';
 import { evaluate, describe, editSmart } from './smart.js';
 import { initVideo } from './video.js';
+import { openExport, exportFinished } from './export-ui.js';
 
 const chew = window.chew;
 const S = {
@@ -616,6 +617,8 @@ async function trackMenu(ids, ctx) {
     { id: 'queue', label: 'Add to Queue' },
     { type: 'separator' },
     { label: 'Add to Playlist', submenu: playlistSubmenu('audio') },
+    { id: 'convert', label: 'Convert…' },
+    { id: 'todevice', label: 'Copy to Device…' },
     { label: 'Rating', submenu: ratingSubmenu(ids.length === 1 ? S.byId.get(ids[0])?.rating : null) },
     { type: 'separator' },
     { id: 'info', label: ids.length > 1 ? 'Edit Info…' : 'Get Info…' },
@@ -634,6 +637,7 @@ async function trackMenu(ids, ctx) {
   else if (choice.startsWith('pl:')) addToPlaylist(choice.slice(3), ids);
   else if (choice.startsWith('rate:')) rateIds(ids, Number(choice.slice(5)));
   else if (choice === 'info') openInfo(ids);
+  else if (choice === 'convert' || choice === 'todevice') openExport({ kind: 'audio', items: tracks, mode: choice === 'convert' ? 'convert' : 'device', settings: S.settings });
   else if (choice === 'lookup') lookup(ids);
   else if (choice === 'reveal') chew.reveal(ids[0]);
   else if (choice === 'remove-pl') removeFromPlaylist(ctx.playlist, S.table.selectedIndices());
@@ -648,6 +652,8 @@ async function groupMenu(tracks, extra = []) {
     { id: 'queue', label: 'Add to Queue' },
     { type: 'separator' },
     { label: 'Add to Playlist', submenu: playlistSubmenu('audio') },
+    { id: 'convert', label: 'Convert…' },
+    { id: 'todevice', label: 'Copy to Device…' },
     { id: 'lookup', label: 'Look Up Online' },
     ...extra,
   ];
@@ -660,6 +666,7 @@ async function groupMenu(tracks, extra = []) {
   else if (choice === 'pl:new') newPlaylist(ids);
   else if (choice?.startsWith('pl:')) addToPlaylist(choice.slice(3), ids);
   else if (choice === 'lookup') lookup(ids);
+  else if (choice === 'convert' || choice === 'todevice') openExport({ kind: 'audio', items: tracks, mode: choice === 'convert' ? 'convert' : 'device', settings: S.settings });
   return choice;
 }
 
@@ -897,18 +904,18 @@ if ('mediaSession' in navigator) {
 // ---------------------------------------------------------------- status & toasts
 
 
-const status = { scan: null, fetch: null, vscan: null, vfetch: null };
+const status = { scan: null, fetch: null, vscan: null, vfetch: null, exp: null };
 function renderStatus() {
   const box = $('#status');
   const bar = $('#status-bar');
   const prog = bar.parentElement;
-  const s = status.scan || status.vscan || status.fetch || status.vfetch;
+  const s = status.exp || status.scan || status.vscan || status.fetch || status.vfetch;
   box.hidden = !s;
   if (!s) return;
   $('#status-label').textContent = s.label;
-  $('#status-cancel').hidden = !status.fetch || !!status.scan;
-  prog.classList.toggle('indeterminate', !s.total);
-  bar.style.width = s.total ? `${Math.round((s.done / s.total) * 100)}%` : '0';
+  $('#status-cancel').hidden = !(status.exp || (status.fetch && !status.scan));
+  prog.classList.toggle('indeterminate', !s.total && s.percent == null);
+  bar.style.width = s.percent != null ? `${s.percent}%` : s.total ? `${Math.round((s.done / s.total) * 100)}%` : '0';
 }
 
 chew.onScanProgress((p) => {
@@ -935,7 +942,18 @@ chew.onFetchProgress((p) => {
   }
   renderStatus();
 });
-$('#status-cancel').addEventListener('click', () => chew.cancelFetch());
+$('#status-cancel').addEventListener('click', () => (status.exp ? chew.exporter.cancel(status.exp.jobId) : chew.cancelFetch()));
+
+chew.onExportProgress((p) => {
+  const verb = p.converting ? 'Converting' : 'Copying';
+  status.exp = { jobId: p.jobId, percent: p.percent, label: `${verb} ${Math.min(p.done + 1, p.total)} of ${p.total}${p.deviceName ? ` to ${p.deviceName}` : ''} · ${p.percent}%` };
+  renderStatus();
+});
+chew.onExportDone((d) => {
+  status.exp = null;
+  renderStatus();
+  exportFinished(d);
+});
 
 chew.onLibraryChanged(async () => {
   await loadState();
@@ -1053,6 +1071,7 @@ document.addEventListener('contextmenu', async (e) => {
     const choice = await chew.contextMenu([
       { id: 'play', label: 'Play' }, { id: 'shuffle', label: 'Shuffle' }, { type: 'separator' },
       ...(p.smart ? [{ id: 'edit', label: 'Edit Rules…' }] : []),
+      { id: 'todevice', label: 'Copy to Device…' }, { id: 'convert', label: 'Convert…' },
       { id: 'rename', label: 'Rename' }, { id: 'export', label: 'Export as M3U…' }, { type: 'separator' },
       { id: 'delete', label: 'Delete Playlist' },
     ]);
@@ -1063,6 +1082,10 @@ document.addEventListener('contextmenu', async (e) => {
     if (choice === 'rename') startRename(id);
     if (choice === 'export' && (await exportPlaylist(id))) toast('Playlist exported');
     if (choice === 'delete') deletePlaylist(id);
+    if (choice === 'todevice' || choice === 'convert') {
+      const vids = kindOf(p) === 'video' ? (p.smart ? evaluate(p, video.items(), 'video') : p.trackIds.map((x) => video.get(x)).filter(Boolean)) : null;
+      openExport({ kind: kindOf(p), items: vids || tracks, mode: choice === 'convert' ? 'convert' : 'device', settings: S.settings });
+    }
     return;
   }
   const card = e.target.closest('[data-album]');
